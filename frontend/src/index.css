@@ -130,21 +130,18 @@ body {
   padding: 0 8px;
 }
 
-.sidebar-logo-icon {
-  width: 22px;
-  height: 22px;
-  border-radius: 7px;
-  background: linear-gradient(135deg, #4f46e5 0%, #7c6cff 100%);
-  color: #fff;
-  display: grid;
-  place-items: center;
-  font-size: 12px;
-  font-weight: 700;
+.sidebar-logo-image {
+  width: 32px;
+  height: 32px;
+  display: block;
+  flex-shrink: 0;
 }
 
 .sidebar-logo-text {
-  font-size: 30px;
-  letter-spacing: 0.2px;
+  font-size: 17px;
+  letter-spacing: -0.02em;
+  line-height: 1;
+  color: #242b3e;
 }
 
 .sidebar-nav-block {
@@ -210,8 +207,32 @@ body {
   font-size: 13px;
 }
 
+.sidebar-mini-link-btn {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
 .sidebar-mini-link:hover {
   background: #eef0f8;
+}
+
+.wechat-help-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding-top: 4px;
+}
+
+.wechat-help-image {
+  width: 240px;
+  max-width: 100%;
+  border-radius: 10px;
+  border: 1px solid #e4e8f2;
+  background: #fff;
 }
 
 .sidebar-user-card {
@@ -1105,6 +1126,49 @@ body {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
   gap: 8px;
+}
+
+.projects-empty {
+  border: 1px dashed #cfd7ea;
+  border-radius: 14px;
+  min-height: 320px;
+  background:
+    radial-gradient(380px 240px at 12% 0%, rgba(121, 138, 255, 0.1), transparent 72%),
+    linear-gradient(180deg, #fcfdff 0%, #f7f9ff 100%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 24px;
+  text-align: center;
+}
+
+.projects-empty-icon {
+  width: 52px;
+  height: 52px;
+  border-radius: 16px;
+  display: grid;
+  place-items: center;
+  font-size: 24px;
+  color: #5363f0;
+  background: #eef1ff;
+  border: 1px solid #d7def8;
+}
+
+.projects-empty-title.ant-typography {
+  margin: 0;
+  font-size: 24px;
+  line-height: 1.2;
+  color: #283148;
+}
+
+.projects-empty-desc.ant-typography {
+  margin: 0 0 2px;
+  max-width: 480px;
+  color: #6f7890;
+  font-size: 14px;
+  line-height: 1.7;
 }
 
 .project-card {

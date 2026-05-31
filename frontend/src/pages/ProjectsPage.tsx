@@ -1,6 +1,7 @@
 import {
   CheckCircleFilled,
   ClockCircleFilled,
+  CompassOutlined,
   FolderAddOutlined,
   RightOutlined,
   SyncOutlined,
@@ -102,63 +103,80 @@ export default function ProjectsPage() {
         </div>
 
         <div className="project-list">
-          {projects.map((project) => {
-            const metrics = metricsForProject(project, sources, jobs)
-            const active = project.id === activeProjectId
-
-            return (
-              <div
-                key={project.id}
-                className={`project-card project-card-status-${project.status}${active ? ' project-card-active' : ''}`}
-                onClick={() => openWorkspace(project)}
-              >
-                <div className="project-card-main">
-                  <div className="project-card-title-row">
-                    <Typography.Text strong className="project-card-title">
-                      {project.name}
-                    </Typography.Text>
-                    <span className={`project-status-icon project-status-icon-${project.status}`}>
-                      {statusIcon(project.status)}
-                    </span>
-                  </div>
-
-                  <div className="project-card-meta-row">
-                    <Typography.Text className="project-card-meta-item">{statusText(project.status)}</Typography.Text>
-                    <Typography.Text className="project-card-meta-sep">·</Typography.Text>
-                    <Typography.Text className="project-card-meta-item">{project.slideCount} 页</Typography.Text>
-                  </div>
-
-                  <div className="project-card-footer">
-                    <Typography.Text className="project-card-footer-text project-card-footer-time">
-                      最近编辑 {shortTime(project.updatedAt)}
-                    </Typography.Text>
-                  </div>
-                </div>
-
-                <div className="project-card-side">
-                  <div className="project-card-stats-grid">
-                    <div className="project-stat-chip">
-                      <span className="project-stat-label">素材</span>
-                      <span className="project-stat-value">{metrics.sourceTotal}</span>
-                    </div>
-                    <div className="project-stat-chip">
-                      <span className="project-stat-label">任务</span>
-                      <span className="project-stat-value">{metrics.jobTotal}</span>
-                    </div>
-                    <div className="project-stat-chip project-stat-chip-full">
-                      <span className="project-stat-label">运行中</span>
-                      <span className="project-stat-value">{metrics.runningJobs}</span>
-                    </div>
-                  </div>
-
-                  <div className="project-card-enter">
-                    <span>进入工作台</span>
-                    <RightOutlined />
-                  </div>
-                </div>
+          {projects.length === 0 ? (
+            <div className="projects-empty">
+              <div className="projects-empty-icon">
+                <CompassOutlined />
               </div>
-            )
-          })}
+              <Typography.Title level={4} className="projects-empty-title">
+                还没有项目
+              </Typography.Title>
+              <Typography.Paragraph className="projects-empty-desc">
+                创建一个项目后，你就可以上传素材、让 AI 分析并生成演示文稿。
+              </Typography.Paragraph>
+              <Button type="primary" icon={<FolderAddOutlined />} onClick={() => setProjectModalOpen(true)}>
+                新建第一个项目
+              </Button>
+            </div>
+          ) : (
+            projects.map((project) => {
+              const metrics = metricsForProject(project, sources, jobs)
+              const active = project.id === activeProjectId
+
+              return (
+                <div
+                  key={project.id}
+                  className={`project-card project-card-status-${project.status}${active ? ' project-card-active' : ''}`}
+                  onClick={() => openWorkspace(project)}
+                >
+                  <div className="project-card-main">
+                    <div className="project-card-title-row">
+                      <Typography.Text strong className="project-card-title">
+                        {project.name}
+                      </Typography.Text>
+                      <span className={`project-status-icon project-status-icon-${project.status}`}>
+                        {statusIcon(project.status)}
+                      </span>
+                    </div>
+
+                    <div className="project-card-meta-row">
+                      <Typography.Text className="project-card-meta-item">{statusText(project.status)}</Typography.Text>
+                      <Typography.Text className="project-card-meta-sep">·</Typography.Text>
+                      <Typography.Text className="project-card-meta-item">{project.slideCount} 页</Typography.Text>
+                    </div>
+
+                    <div className="project-card-footer">
+                      <Typography.Text className="project-card-footer-text project-card-footer-time">
+                        最近编辑 {shortTime(project.updatedAt)}
+                      </Typography.Text>
+                    </div>
+                  </div>
+
+                  <div className="project-card-side">
+                    <div className="project-card-stats-grid">
+                      <div className="project-stat-chip">
+                        <span className="project-stat-label">素材</span>
+                        <span className="project-stat-value">{metrics.sourceTotal}</span>
+                      </div>
+                      <div className="project-stat-chip">
+                        <span className="project-stat-label">任务</span>
+                        <span className="project-stat-value">{metrics.jobTotal}</span>
+                      </div>
+                      <div className="project-stat-chip project-stat-chip-full">
+                        <span className="project-stat-label">运行中</span>
+                        <span className="project-stat-value">{metrics.runningJobs}</span>
+                      </div>
+                    </div>
+
+                    <div className="project-card-enter">
+                      <span>进入工作台</span>
+                      <RightOutlined />
+                    </div>
+                  </div>
+                </div>
+              )
+            })
+          )}
         </div>
       </div>
 

@@ -58,6 +58,7 @@ export default function TemplatesPage() {
   const [selectedId, setSelectedId] = useState('')
   const [errorText, setErrorText] = useState('')
   const [reloadTick, setReloadTick] = useState(0)
+  const hasActiveProject = Boolean(activeProject?.id)
 
   const selectedTemplate = useMemo(
     () => styles.find((item) => item.id === selectedId) ?? styles[0] ?? null,
@@ -115,6 +116,11 @@ export default function TemplatesPage() {
   }
 
   function applyTemplateAndBack() {
+    if (!hasActiveProject) {
+      void message.warning('请先选择项目后再应用模板')
+      return
+    }
+
     if (!selectedTemplate) {
       return
     }
@@ -143,9 +149,6 @@ export default function TemplatesPage() {
               <Tag style={{ borderRadius: 999, marginInlineEnd: 0 }}>
                 当前项目：{activeProject?.name ?? '未选择项目'}
               </Tag>
-              <Button type="primary" disabled={!selectedTemplate} onClick={applyTemplateAndBack}>
-                一键应用到当前项目
-              </Button>
               <Button
                 icon={<ReloadOutlined />}
                 onClick={() => {
@@ -286,7 +289,13 @@ export default function TemplatesPage() {
                   </Typography.Paragraph>
                 </div>
 
-                <Button type="primary" block onClick={applyTemplateAndBack}>
+                <Button
+                  type="primary"
+                  block
+                  disabled={!hasActiveProject}
+                  title={hasActiveProject ? '一键应用到当前项目' : '请先在项目列表选择项目'}
+                  onClick={applyTemplateAndBack}
+                >
                   一键应用到当前项目
                 </Button>
               </>

@@ -2,10 +2,12 @@ import { useEffect } from 'react'
 import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import { AppLayout } from './layout/AppLayout'
 import { ApiHttpError, getAccessToken, setUnauthorizedHandler } from './lib/http'
+import FeaturesPage from './pages/FeaturesPage'
 import JobsPage from './pages/JobsPage'
 import LandingPage from './pages/LandingPage'
 import LoginPage from './pages/LoginPage'
 import ModelSettingsPage from './pages/ModelSettingsPage'
+import PricingPage from './pages/PricingPage'
 import ProjectsPage from './pages/ProjectsPage'
 import RegisterPage from './pages/RegisterPage'
 import TemplatesPage from './pages/TemplatesPage'
@@ -68,6 +70,8 @@ export default function App() {
       <AuthLifecycle />
       <Routes>
         <Route path="/" element={<LandingPage />} />
+        <Route path="/features" element={<FeaturesPage />} />
+        <Route path="/pricing" element={<PricingPage />} />
         <Route path="/login" element={<LoginPage />} />
         <Route path="/register" element={<RegisterPage />} />
         <Route path="/forgot-password" element={<ForgotPasswordPage />} />

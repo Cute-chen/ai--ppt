@@ -20,6 +20,14 @@ app.use(
     }
   })
 );
+app.use(
+  '/api/wechat',
+  express.static(path.join(process.cwd(), 'img-wechat'), {
+    setHeaders: (res) => {
+      res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+    }
+  })
+);
 
 app.get('/', (_req: Request, res: Response) => {
   ok(

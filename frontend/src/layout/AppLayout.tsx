@@ -9,9 +9,12 @@ import {
   SwapOutlined,
   UserOutlined,
 } from '@ant-design/icons'
-import { Avatar, Button, Layout, Space, Typography } from 'antd'
+import { Avatar, Button, Layout, Modal, Space, Typography } from 'antd'
+import { useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useAppStore } from '../store/AppStore'
+import logoSvg from '../assets/lumislide-logo.svg'
+import { withApiBase } from '../lib/http'
 
 const { Sider, Content } = Layout
 
@@ -32,6 +35,7 @@ export function AppLayout() {
   const navigate = useNavigate()
   const location = useLocation()
   const { activeProject, currentUser, logout } = useAppStore()
+  const [wechatOpen, setWechatOpen] = useState(false)
   const inWorkspace = location.pathname.startsWith('/workspace')
   const inModelSettings = location.pathname.startsWith('/model-settings')
 
@@ -46,10 +50,17 @@ export function AppLayout() {
     <Layout className="aippt-layout-root">
       <Sider width={228} className="aippt-sidebar" breakpoint="lg" collapsedWidth={0}>
         <div className="sidebar-logo-wrap">
-          <div className="sidebar-logo-icon">P</div>
-          <Typography.Text strong className="sidebar-logo-text">
-            AI PPT
-          </Typography.Text>
+          <button
+            type="button"
+            onClick={() => void navigate('/')}
+            style={{ display: 'flex', alignItems: 'center', gap: 10, background: 'none', border: 'none', padding: 0, cursor: 'pointer' }}
+            aria-label="返回首页"
+          >
+            <img src={logoSvg} alt="Lumislide logo" className="sidebar-logo-image" />
+            <Typography.Text strong className="sidebar-logo-text">
+              Lumislide
+            </Typography.Text>
+          </button>
         </div>
 
         <div className="sidebar-nav-block">
@@ -69,14 +80,14 @@ export function AppLayout() {
 
         <div className="sidebar-bottom-area">
           <div className="sidebar-bottom-links">
-            <div className="sidebar-mini-link">
+            <button
+              type="button"
+              className="sidebar-mini-link sidebar-mini-link-btn"
+              onClick={() => setWechatOpen(true)}
+            >
               <QuestionCircleOutlined />
               <span>帮助中心</span>
-            </div>
-            <div className="sidebar-mini-link">
-              <SettingOutlined />
-              <span>设置</span>
-            </div>
+            </button>
           </div>
 
           <div className="sidebar-user-card">
@@ -136,6 +147,21 @@ export function AppLayout() {
           <Outlet />
         </Content>
       </Layout>
+
+      <Modal
+        title="帮助中心（微信）"
+        open={wechatOpen}
+        footer={null}
+        onCancel={() => setWechatOpen(false)}
+        centered
+      >
+        <div className="wechat-help-wrap">
+          <img src={withApiBase('/api/wechat/qrcode.png')} alt="微信二维码" className="wechat-help-image" />
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            扫码添加微信获取帮助支持
+          </Typography.Text>
+        </div>
+      </Modal>
     </Layout>
   )
 }
