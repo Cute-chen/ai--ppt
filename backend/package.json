@@ -1,0 +1,39 @@
+{
+  "name": "backend",
+  "version": "1.0.0",
+  "main": "dist/server.js",
+  "scripts": {
+    "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/server.js",
+    "worker": "ts-node-dev --respawn --transpile-only src/worker/index.ts"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.100.1",
+    "@types/nodemailer": "^8.0.0",
+    "axios": "^1.16.1",
+    "bullmq": "^5.77.6",
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "helmet": "^8.2.0",
+    "ioredis": "^5.11.0",
+    "mammoth": "^1.12.0",
+    "mysql2": "^3.22.4",
+    "nodemailer": "^8.0.10",
+    "openai": "^6.39.1",
+    "pdf-parse": "^2.4.5",
+    "pptxgenjs": "^4.0.1"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/node": "^25.9.1",
+    "ts-node-dev": "^2.0.0",
+    "typescript": "^6.0.3"
+  }
+}
