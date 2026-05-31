@@ -2,11 +2,15 @@ import {
   CheckCircleFilled,
   ClockCircleFilled,
   CompassOutlined,
+  DeleteOutlined,
+  EditOutlined,
   FolderAddOutlined,
+  MoreOutlined,
   RightOutlined,
   SyncOutlined,
 } from '@ant-design/icons'
-import { App, Button, Modal, Space, Typography } from 'antd'
+import { App, Button, Dropdown, Input, Modal, Space, Typography, type MenuProps } from 'antd'
+import { type MouseEvent, useMemo, useState } from 'react'
 import { Navigate, useNavigate } from 'react-router-dom'
 import { useProjectsData, useRequireAuth, useWorkspaceData } from '../store/AppStore'
 import type { ProjectItem, SourceItem, JobItem } from '../types/app'
@@ -56,11 +60,23 @@ export default function ProjectsPage() {
     setProjectModalOpen,
     setNewProjectName,
     createProject,
+    renameProject,
+    deleteProject,
     openProject,
     statusText,
   } = useProjectsData()
 
   const { sources, jobs, activeProjectId } = useWorkspaceData()
+  const [editingProject, setEditingProject] = useState<ProjectItem | null>(null)
+  const [editingName, setEditingName] = useState('')
+  const [deletingProject, setDeletingProject] = useState<ProjectItem | null>(null)
+
+  const canSubmitRename = useMemo(() => {
+    if (!editingProject) return false
+    const nextName = editingName.trim()
+    if (!nextName) return false
+    return nextName !== editingProject.name
+  }, [editingName, editingProject])
 
   if (!isLoggedIn) {
     return <Navigate to="/login" replace />
@@ -83,6 +99,68 @@ export default function ProjectsPage() {
       })
       .catch((error) => {
         const msg = error instanceof Error ? error.message : '项目创建失败'
+        void message.error(msg)
+      })
+  }
+
+  function openRenameModal(project: ProjectItem) {
+    setEditingProject(project)
+    setEditingName(project.name)
+  }
+
+  function openDeleteModal(project: ProjectItem) {
+    setDeletingProject(project)
+  }
+
+  function menuItemsForProject(project: ProjectItem): MenuProps['items'] {
+    return [
+      {
+        key: 'rename',
+        label: '编辑项目名称',
+        icon: <EditOutlined />,
+        onClick: () => openRenameModal(project),
+      },
+      {
+        key: 'delete',
+        label: '删除项目',
+        icon: <DeleteOutlined />,
+        danger: true,
+        onClick: () => openDeleteModal(project),
+      },
+    ]
+  }
+
+  function handleCardMenuClick(event: MouseEvent<HTMLElement>) {
+    event.preventDefault()
+    event.stopPropagation()
+  }
+
+  function handleRenameProject() {
+    if (!editingProject) return
+    if (!canSubmitRename) return
+
+    void renameProject(editingProject.id, editingName)
+      .then(() => {
+        void message.success('项目名称已更新')
+        setEditingProject(null)
+        setEditingName('')
+      })
+      .catch((error) => {
+        const msg = error instanceof Error ? error.message : '项目名称更新失败'
+        void message.error(msg)
+      })
+  }
+
+  function handleDeleteProject() {
+    if (!deletingProject) return
+
+    void deleteProject(deletingProject.id)
+      .then(() => {
+        void message.success('项目已删除')
+        setDeletingProject(null)
+      })
+      .catch((error) => {
+        const msg = error instanceof Error ? error.message : '删除项目失败'
         void message.error(msg)
       })
   }
@@ -129,14 +207,29 @@ export default function ProjectsPage() {
                   className={`project-card project-card-status-${project.status}${active ? ' project-card-active' : ''}`}
                   onClick={() => openWorkspace(project)}
                 >
+                  <div className="project-card-actions" onClick={handleCardMenuClick}>
+                    <Dropdown menu={{ items: menuItemsForProject(project) }} trigger={['click']} placement="bottomRight">
+                      <Button
+                        type="text"
+                        size="small"
+                        icon={<MoreOutlined />}
+                        className="project-card-more-btn"
+                        aria-label={`项目 ${project.name} 更多操作`}
+                        onClick={handleCardMenuClick}
+                      />
+                    </Dropdown>
+                  </div>
+
                   <div className="project-card-main">
                     <div className="project-card-title-row">
-                      <Typography.Text strong className="project-card-title">
-                        {project.name}
-                      </Typography.Text>
-                      <span className={`project-status-icon project-status-icon-${project.status}`}>
-                        {statusIcon(project.status)}
-                      </span>
+                      <div className="project-card-title-main">
+                        <Typography.Text strong className="project-card-title">
+                          {project.name}
+                        </Typography.Text>
+                        <span className={`project-status-icon project-status-icon-${project.status}`}>
+                          {statusIcon(project.status)}
+                        </span>
+                      </div>
                     </div>
 
                     <div className="project-card-meta-row">
@@ -196,6 +289,41 @@ export default function ProjectsPage() {
           />
           <Typography.Text type="secondary">创建后自动初始化来源、对话、预览三栏工作区。</Typography.Text>
         </Space>
+      </Modal>
+
+      <Modal
+        title="编辑项目名称"
+        open={Boolean(editingProject)}
+        onCancel={() => {
+          setEditingProject(null)
+          setEditingName('')
+        }}
+        onOk={handleRenameProject}
+        okText="保存"
+        okButtonProps={{ disabled: !canSubmitRename }}
+      >
+        <Space direction="vertical" size={10} style={{ width: '100%', marginTop: 8 }}>
+          <Input
+            placeholder="项目名称"
+            value={editingName}
+            onChange={(event) => setEditingName(event.target.value)}
+            onPressEnter={handleRenameProject}
+            maxLength={255}
+          />
+        </Space>
+      </Modal>
+
+      <Modal
+        title="删除项目"
+        open={Boolean(deletingProject)}
+        onCancel={() => setDeletingProject(null)}
+        onOk={handleDeleteProject}
+        okText="删除"
+        okButtonProps={{ danger: true }}
+      >
+        <Typography.Text>
+          确定删除项目「{deletingProject?.name || ''}」吗？删除后相关素材与导出文件将一并移除，且无法恢复。
+        </Typography.Text>
       </Modal>
     </div>
   )

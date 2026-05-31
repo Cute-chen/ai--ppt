@@ -68,6 +68,13 @@ export const setUnauthorizedHandler = (handler: (() => void) | null): void => {
 
 export const withApiBase = (path: string): string => normalizeUrl(path)
 
+export const buildApiHeaders = (
+  input?: Record<string, string>,
+  options?: { skipAuth?: boolean },
+): Record<string, string> => {
+  return buildHeaders(input, options?.skipAuth)
+}
+
 export async function apiRequest<T>(path: string, options: ApiRequestOptions = {}): Promise<T> {
   const method = options.method || 'GET'
   const headers = buildHeaders(options.headers, options.skipAuth)

@@ -1,4 +1,4 @@
-import { ClockCircleOutlined, ReloadOutlined } from '@ant-design/icons'
+import { ClockCircleOutlined, DeleteOutlined, ReloadOutlined, StopOutlined } from '@ant-design/icons'
 import {
   Alert,
   App,
@@ -24,18 +24,21 @@ const jobStatusColor = {
   running: 'processing',
   succeeded: 'success',
   failed: 'error',
+  canceled: 'default',
 } as const
 
 export default function JobsPage() {
   const { message } = App.useApp()
   const isLoggedIn = useRequireAuth()
-  const { displayedJobs, showOnlyFailedJobs, setShowOnlyFailedJobs, retryJob, statusText } = useJobsData()
+  const { displayedJobs, showOnlyFailedJobs, setShowOnlyFailedJobs, retryJob, cancelJob, deleteJob, statusText } =
+    useJobsData()
   const [detailOpen, setDetailOpen] = useState(false)
   const [detailLoading, setDetailLoading] = useState(false)
   const [detailError, setDetailError] = useState('')
   const [selectedJobId, setSelectedJobId] = useState('')
   const [jobDetail, setJobDetail] = useState<JobDTO | null>(null)
   const [jobEvents, setJobEvents] = useState<JobEventDTO[]>([])
+  const [deletingJobId, setDeletingJobId] = useState('')
   const detailSeq = useRef(0)
 
   if (!isLoggedIn) {
@@ -49,6 +52,37 @@ export default function JobsPage() {
       const msg = error instanceof Error ? error.message : '任务重试失败'
       void message.warning(msg)
     })
+  }
+
+  function handleCancelJob(jobId: string) {
+    void cancelJob(jobId)
+      .then(() => {
+        void message.success('任务已取消')
+        if (selectedJobId === jobId) {
+          void loadJobDetail(jobId, true)
+        }
+      })
+      .catch((error) => {
+        const msg = error instanceof Error ? error.message : '任务取消失败'
+        void message.warning(msg)
+      })
+  }
+
+  function handleDeleteJob(jobId: string) {
+    void deleteJob(jobId)
+      .then(() => {
+        void message.success('任务已删除')
+        if (selectedJobId === jobId) {
+          setDetailOpen(false)
+        }
+      })
+      .catch((error) => {
+        const msg = error instanceof Error ? error.message : '任务删除失败'
+        void message.warning(msg)
+      })
+      .finally(() => {
+        setDeletingJobId('')
+      })
   }
 
   async function loadJobDetail(jobId: string, silent = false) {
@@ -155,16 +189,26 @@ export default function JobsPage() {
     {
       title: '操作',
       key: 'action',
-      width: 170,
+      width: 240,
       align: 'center',
       render: (_value, record) => (
         <Space size={4}>
           <Button type="text" onClick={() => openDetail(record.id)}>
             详情
           </Button>
+          {record.status === 'queued' ? (
+            <Button type="text" icon={<StopOutlined />} onClick={() => handleCancelJob(record.id)}>
+              取消
+            </Button>
+          ) : null}
           {record.retryable ? (
             <Button type="text" icon={<ReloadOutlined />} onClick={() => handleRetryJob(record.id)}>
               重试
+            </Button>
+          ) : null}
+          {record.status === 'succeeded' || record.status === 'failed' || record.status === 'canceled' ? (
+            <Button type="text" danger icon={<DeleteOutlined />} onClick={() => setDeletingJobId(record.id)}>
+              删除
             </Button>
           ) : null}
         </Space>
@@ -203,6 +247,24 @@ export default function JobsPage() {
         onCancel={() => setDetailOpen(false)}
         width={900}
         footer={[
+          jobDetail?.status === 'queued' ? (
+            <Button key="cancel" icon={<StopOutlined />} onClick={() => handleCancelJob(jobDetail.id)}>
+              取消任务
+            </Button>
+          ) : null,
+          jobDetail?.status === 'failed' ? (
+            <Button key="retry" icon={<ReloadOutlined />} onClick={() => handleRetryJob(jobDetail.id)}>
+              重试任务
+            </Button>
+          ) : null,
+          jobDetail &&
+          (jobDetail.status === 'succeeded' ||
+            jobDetail.status === 'failed' ||
+            jobDetail.status === 'canceled') ? (
+            <Button key="delete" danger icon={<DeleteOutlined />} onClick={() => setDeletingJobId(jobDetail.id)}>
+              删除任务
+            </Button>
+          ) : null,
           <Button
             key="refresh"
             onClick={() => {
@@ -280,6 +342,24 @@ export default function JobsPage() {
         ) : (
           <Typography.Text type="secondary">请选择任务查看详情</Typography.Text>
         )}
+      </Modal>
+
+      <Modal
+        title="删除任务"
+        open={Boolean(deletingJobId)}
+        onCancel={() => setDeletingJobId('')}
+        onOk={() => {
+          if (deletingJobId) {
+            handleDeleteJob(deletingJobId)
+          }
+        }}
+        okButtonProps={{ danger: true }}
+        okText="删除"
+        cancelText="取消"
+      >
+        <Typography.Text>
+          确定删除任务「{deletingJobId || ''}」吗？删除后仅移除任务记录与日志，已生成的文件不会被删除。
+        </Typography.Text>
       </Modal>
     </div>
   )

@@ -2,10 +2,13 @@ import { Router } from 'express';
 import { authRequired } from '../../common/http/auth-middleware';
 import {
   createProject,
+  deleteProject,
   getProjectAnalysisSummary,
   getProjectDetail,
   listProjects,
-  patchProjectCustomStyle
+  patchProjectName,
+  patchProjectCustomStyle,
+  reanalyzeProjectAnalysisSummary
 } from './projects.controller';
 
 const router = Router();
@@ -13,7 +16,10 @@ const router = Router();
 router.get('/projects', authRequired, listProjects);
 router.post('/projects', authRequired, createProject);
 router.get('/projects/:id', authRequired, getProjectDetail);
+router.patch('/projects/:id', authRequired, patchProjectName);
+router.delete('/projects/:id', authRequired, deleteProject);
 router.patch('/projects/:id/custom-style', authRequired, patchProjectCustomStyle);
 router.get('/projects/:id/analysis-summary', authRequired, getProjectAnalysisSummary);
+router.post('/projects/:id/analysis-summary/reanalyze', authRequired, reanalyzeProjectAnalysisSummary);
 
 export default router;

@@ -138,7 +138,7 @@ export default function ModelSettingsPage() {
               <div className="setting-row">
                 <span className="setting-row-label">API Key</span>
                 <Input.Password
-                  placeholder="sk-..."
+                  placeholder={analysisConfig.apiKeyMasked || '请输入真实 API Key（不会显示明文）'}
                   value={analysisConfig.apiKey}
                   onChange={(event) => setAnalysisConfig((prev) => ({ ...prev, apiKey: event.target.value }))}
                 />
@@ -180,7 +180,7 @@ export default function ModelSettingsPage() {
               <div className="setting-row">
                 <span className="setting-row-label">API Key</span>
                 <Input.Password
-                  placeholder="sk-xxxx"
+                  placeholder={imageConfig.keyMasked || '请输入真实 API Key（不会显示明文）'}
                   value={imageConfig.key}
                   onChange={(event) => setImageConfig((prev) => ({ ...prev, key: event.target.value }))}
                 />

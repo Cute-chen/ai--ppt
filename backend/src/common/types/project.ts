@@ -22,6 +22,7 @@ export type SourceRecord = {
   size: number;
   status: SourceStatus;
   parseSummary?: string;
+  parsePreview?: string;
   chunkCount: number;
   createdAt: string;
   updatedAt: string;

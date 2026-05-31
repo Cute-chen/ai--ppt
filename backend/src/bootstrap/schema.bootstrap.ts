@@ -18,4 +18,41 @@ export const bootstrapSchema = async (): Promise<void> => {
       throw error;
     }
   }
+
+  try {
+    await executeSql(
+      `ALTER TABLE user_model_configs
+       MODIFY COLUMN analysis_provider VARCHAR(16) NOT NULL`
+    );
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    console.warn(`[schema] skip alter user_model_configs.analysis_provider: ${msg}`);
+  }
+
+  try {
+    await executeSql(
+      `ALTER TABLE jobs
+       MODIFY COLUMN status ENUM('queued','running','succeeded','failed','canceled')
+       NOT NULL DEFAULT 'queued'`
+    );
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    console.warn(`[schema] skip alter jobs.status enum: ${msg}`);
+  }
+
+  // Migrate legacy provider values to the new naming used by frontend/backend.
+  try {
+    await executeSql(
+      `UPDATE user_model_configs
+       SET analysis_provider = CASE
+         WHEN analysis_provider = 'gpt' THEN 'openai'
+         WHEN analysis_provider = 'claude' THEN 'anthropic'
+         ELSE analysis_provider
+       END
+       WHERE analysis_provider IN ('gpt', 'claude')`
+    );
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    console.warn(`[schema] skip provider value migration: ${msg}`);
+  }
 };

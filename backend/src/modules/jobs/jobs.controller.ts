@@ -4,7 +4,7 @@ import { AppError } from '../../common/errors/app-error';
 import { jobService } from '../../services/job.service';
 import { JobStatus, JobType } from '../../common/types/job';
 
-const ALLOWED_JOB_STATUS: JobStatus[] = ['queued', 'running', 'succeeded', 'failed'];
+const ALLOWED_JOB_STATUS: JobStatus[] = ['queued', 'running', 'succeeded', 'failed', 'canceled'];
 const ALLOWED_JOB_TYPE: JobType[] = [
   'source-parse',
   'deck-plan',
@@ -89,4 +89,18 @@ export const retryJob = async (req: Request, res: Response): Promise<void> => {
   const jobId = String(req.params.jobId || '');
   const job = await jobService.retryJob(jobId, userId);
   ok(res, { job }, 'job retry queued');
+};
+
+export const cancelJob = async (req: Request, res: Response): Promise<void> => {
+  const userId = req.userId!;
+  const jobId = String(req.params.jobId || '');
+  const job = await jobService.cancelJob(jobId, userId);
+  ok(res, { job }, 'job canceled');
+};
+
+export const deleteJob = async (req: Request, res: Response): Promise<void> => {
+  const userId = req.userId!;
+  const jobId = String(req.params.jobId || '');
+  await jobService.deleteJob(jobId, userId);
+  ok(res, { id: jobId, deleted: true }, 'job removed');
 };

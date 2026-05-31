@@ -7,7 +7,7 @@ export type JobType =
   | 'deck-generate'
   | 'slide-regenerate'
   | 'deck-export'
-export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed'
+export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled'
 
 export type SourceItem = {
   id: string
@@ -16,6 +16,7 @@ export type SourceItem = {
   status: SourceStatus
   chunks: number
   updatedAt: string
+  parsingElapsedMs: number   // ms since last status update; >0 only when status==='parsing'
   projectName?: string
   sourceGuide: string
   parsePreview: string
@@ -57,6 +58,7 @@ export type AnalysisModelConfig = {
   provider: AnalysisProvider
   baseUrl: string
   apiKey: string
+  apiKeyMasked: string
   model: string
 }
 
@@ -64,6 +66,7 @@ export type ImageModelConfig = {
   _type: 'newapi_channel_conn'
   url: string
   key: string
+  keyMasked: string
   model: string
 }
 
@@ -123,6 +126,7 @@ export type SourceDTO = {
   size: number
   status: SourceStatus
   parseSummary?: string
+  parsePreview?: string
   chunkCount: number
   createdAt: string
   updatedAt: string
@@ -148,6 +152,14 @@ export type ChatMessageDTO = {
   role: 'user' | 'assistant' | 'system'
   content: string
   createdAt: string
+}
+
+export type UiChatMessage = {
+  id: string
+  role: 'user' | 'assistant' | 'system'
+  content: string
+  createdAt: string
+  transient?: boolean
 }
 
 export type JobDTO = {

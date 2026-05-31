@@ -1,6 +1,6 @@
 import {
   AppstoreOutlined,
-  BorderOutlined,
+  CloseOutlined,
   FolderOpenOutlined,
   LogoutOutlined,
   QuestionCircleOutlined,
@@ -20,7 +20,6 @@ const { Sider, Content } = Layout
 
 const coreNavItems = [
   { key: 'projects', label: '项目列表', path: '/projects', icon: <FolderOpenOutlined /> },
-  { key: 'workspace', label: '工作台', path: '/workspace', icon: <BorderOutlined /> },
   { key: 'templates', label: '模板库', path: '/templates', icon: <SkinOutlined /> },
   { key: 'jobs', label: '任务中心', path: '/jobs', icon: <AppstoreOutlined /> },
   { key: 'model-settings', label: '模型设置', path: '/model-settings', icon: <SettingOutlined /> },
@@ -34,10 +33,17 @@ function initials(email: string): string {
 export function AppLayout() {
   const navigate = useNavigate()
   const location = useLocation()
-  const { activeProject, currentUser, logout } = useAppStore()
+  const { activeProject, currentUser, logout, analysisConfig, imageConfig } = useAppStore()
   const [wechatOpen, setWechatOpen] = useState(false)
+  const [bannerDismissed, setBannerDismissed] = useState(false)
   const inWorkspace = location.pathname.startsWith('/workspace')
   const inModelSettings = location.pathname.startsWith('/model-settings')
+
+  // Configured = has a masked key from the server (non-empty), OR user has typed a new key
+  const analysisConfigured = analysisConfig.apiKeyMasked.trim().length > 0 || analysisConfig.apiKey.trim().length > 0
+  const imageConfigured = imageConfig.keyMasked.trim().length > 0 || imageConfig.key.trim().length > 0
+  const isModelConfigured = analysisConfigured && imageConfigured
+  const showSetupBanner = !isModelConfigured && !inModelSettings && !bannerDismissed
 
   const displayEmail = currentUser?.email || 'unknown@user.local'
   const contentClassName = inWorkspace
@@ -144,6 +150,86 @@ export function AppLayout() {
         ) : null}
 
         <Content className={contentClassName}>
+          {showSetupBanner && (
+            <div
+              style={{
+                margin: '0 0 12px 0',
+                padding: '12px 16px',
+                borderRadius: 12,
+                background: 'linear-gradient(135deg, #eeecff 0%, #e8f4ff 100%)',
+                border: '1px solid #c4bfff',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 12,
+              }}
+            >
+              {/* Icon */}
+              <div
+                style={{
+                  width: 32,
+                  height: 32,
+                  borderRadius: 8,
+                  background: 'linear-gradient(135deg, #4f46e5, #6d63ff)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  flexShrink: 0,
+                }}
+              >
+                <SettingOutlined style={{ color: 'white', fontSize: 14 }} />
+              </div>
+
+              {/* Text */}
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <Typography.Text strong style={{ fontSize: 13, color: '#1f2433', display: 'block' }}>
+                  还差一步——配置 AI 模型
+                </Typography.Text>
+                <Typography.Text style={{ fontSize: 12, color: '#5d6377' }}>
+                  {!analysisConfigured && !imageConfigured
+                    ? '分析模型和生图模型均未配置，配置后才能正常使用 AI 功能'
+                    : !analysisConfigured
+                      ? '分析模型尚未配置，配置后才能解析素材和生成内容'
+                      : '生图模型尚未配置，配置后才能为演示文稿生成配图'}
+                </Typography.Text>
+              </div>
+
+              {/* CTA */}
+              <Button
+                type="primary"
+                size="small"
+                icon={<SettingOutlined />}
+                onClick={() => void navigate('/model-settings')}
+                style={{
+                  background: 'linear-gradient(135deg, #4f46e5, #6d63ff)',
+                  border: 'none',
+                  borderRadius: 8,
+                  flexShrink: 0,
+                  boxShadow: '0 2px 8px rgba(79,70,229,0.3)',
+                }}
+              >
+                立即配置
+              </Button>
+
+              {/* Dismiss */}
+              <button
+                type="button"
+                onClick={() => setBannerDismissed(true)}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  cursor: 'pointer',
+                  padding: 4,
+                  color: '#a0a8bc',
+                  flexShrink: 0,
+                  display: 'flex',
+                  alignItems: 'center',
+                }}
+                aria-label="关闭提示"
+              >
+                <CloseOutlined style={{ fontSize: 12 }} />
+              </button>
+            </div>
+          )}
           <Outlet />
         </Content>
       </Layout>

@@ -80,6 +80,16 @@ const buildAdditionalInstructions = async (input: {
   return lines.join('\n');
 };
 
+const buildSourceChunksFromUserMessages = (messages: string[]): string[] => {
+  const cleaned = messages
+    .map((line) => line.replace(/\r\n/g, '\n').trim())
+    .filter(Boolean);
+  if (!cleaned.length) return [];
+
+  const merged = cleaned.map((line, idx) => `需求${idx + 1}：${line}`).join('\n');
+  return [`以下内容来自用户对话需求（无上传素材场景）：\n${merged}`];
+};
+
 const normalizePlanSlides = (plan: SkillPlan, fallbackCount: number): SkillPlanSlide[] => {
   const sorted = plan.slides
     .slice()
@@ -273,7 +283,15 @@ const choosePlanContext = async (input: {
   }
 
   const modelConfig = await modelConfigService.getRawConfig(input.userId);
-  const sourceChunks = await projectService.listSourceChunkContents(input.userId, input.projectId, 160);
+  let sourceChunks = await projectService.listSourceChunkContents(input.userId, input.projectId, 160);
+  if (sourceChunks.length === 0) {
+    const recentUserMessages = await projectService.listRecentUserChatContents(
+      input.userId,
+      input.projectId,
+      8
+    );
+    sourceChunks = buildSourceChunksFromUserMessages(recentUserMessages);
+  }
   const markdown = await deckPlanService.generateSlidesPlanMarkdown({
     modelConfig,
     projectName: project.name,
@@ -373,7 +391,11 @@ const handleDeckPlan = async (input: WorkerPayload): Promise<Record<string, unkn
     customStyle: project.customStyle
   });
   const modelConfig = await modelConfigService.getRawConfig(userId);
-  const sourceChunks = await projectService.listSourceChunkContents(userId, projectId, 160);
+  let sourceChunks = await projectService.listSourceChunkContents(userId, projectId, 160);
+  if (sourceChunks.length === 0) {
+    const recentUserMessages = await projectService.listRecentUserChatContents(userId, projectId, 8);
+    sourceChunks = buildSourceChunksFromUserMessages(recentUserMessages);
+  }
 
   const deckSpec = await deckPlanService.generateDeckSpec({
     modelConfig,
@@ -412,7 +434,11 @@ const handleDeckGenerate = async (input: WorkerPayload): Promise<Record<string, 
       customStyle: project.customStyle
     });
     const modelConfig = await modelConfigService.getRawConfig(userId);
-    const sourceChunks = await projectService.listSourceChunkContents(userId, projectId, 160);
+    let sourceChunks = await projectService.listSourceChunkContents(userId, projectId, 160);
+    if (sourceChunks.length === 0) {
+      const recentUserMessages = await projectService.listRecentUserChatContents(userId, projectId, 8);
+      sourceChunks = buildSourceChunksFromUserMessages(recentUserMessages);
+    }
     const deckSpec = await deckPlanService.generateDeckSpec({
       modelConfig,
       projectName: project.name,

@@ -1,4 +1,4 @@
-export type AnalysisProvider = 'gpt' | 'claude';
+export type AnalysisProvider = 'openai' | 'anthropic';
 
 export type AnalysisModelConfig = {
   provider: AnalysisProvider;
@@ -11,7 +11,7 @@ export type ImageModelConfig = {
   _type: 'newapi_channel_conn';
   url: string; // OpenAI-compatible endpoint
   key: string;
-  model: 'gpt-image-2';
+  model: string;
 };
 
 export type UserModelConfig = {

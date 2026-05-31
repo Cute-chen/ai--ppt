@@ -16,7 +16,13 @@ export const createAppWorker = (): Worker => {
         payload: Record<string, unknown>;
       };
 
-      await jobService.updateStatus(payload.localJobId, 'running', 20);
+      const started = await jobService.startJob(payload.localJobId, 20);
+      if (!started) {
+        return {
+          skipped: true,
+          reason: 'job status is not queued'
+        };
+      }
 
       const result = await handleJobByType(payload);
 

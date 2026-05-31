@@ -21,6 +21,93 @@ const estimateTokens = (text: string): number => {
   return Math.max(1, Math.ceil(text.length / 4));
 };
 
+const normalizeSpaces = (text: string): string => {
+  return text.replace(/\u00A0/g, ' ').replace(/[ \t]+/g, ' ').trim();
+};
+
+const stripMarkdownAndMeta = (text: string): string => {
+  return text
+    .replace(/^---[\r\n]+[\s\S]*?[\r\n]+---[\r\n]*/m, '')
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/^[-*+]\s+/gm, '')
+    .replace(/^\d+[.)、]\s+/gm, '')
+    .replace(/\[(cover|content|data)\]\s*/gi, '')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1')
+    .replace(/^\s*(title|date|author|tags|description)\s*:\s*.*$/gim, '')
+    .replace(/^\s*\|.*\|\s*$/gm, '')
+    .replace(/^\s*[-:| ]{3,}\s*$/gm, '');
+};
+
+const isLikelyMetaLine = (line: string): boolean => {
+  if (!line) return true;
+  if (/^(小组|成员|汇报人|日期|来源)[:：]/.test(line)) return true;
+  if (/^[\W_]+$/.test(line)) return true;
+  return false;
+};
+
+const scoreSentence = (sentence: string): number => {
+  let score = 0;
+  if (/[。！？.!?]/.test(sentence)) score += 3;
+  if (sentence.length >= 16) score += 2;
+  if (/^(为什么|本项目|系统|该架构|通过|旨在|核心|关键|用于)/.test(sentence)) score += 2;
+  if (/工作流|智能体|路由|分支|意图|用户画像|语音交互|模块化/.test(sentence)) score += 2;
+  if (/^[A-Za-z0-9 _-]+$/.test(sentence)) score -= 3;
+  return score;
+};
+
+const splitToSentences = (text: string): string[] => {
+  const lines = text
+    .replace(/\r\n/g, '\n')
+    .split('\n')
+    .map((line) => normalizeSpaces(line))
+    .filter((line) => line && !isLikelyMetaLine(line));
+
+  const parts: string[] = [];
+  for (const line of lines) {
+    const sentences = line
+      .split(/(?<=[。！？.!?；;])/)
+      .map((item) => normalizeSpaces(item))
+      .filter(Boolean);
+    if (sentences.length > 0) {
+      parts.push(...sentences);
+    } else {
+      parts.push(line);
+    }
+  }
+
+  return parts;
+};
+
+const buildReadableSummary = (text: string, filename: string): string => {
+  const normalized = stripMarkdownAndMeta(text).replace(/\r\n/g, '\n').trim();
+  if (!normalized) {
+    return '未解析到有效文本内容。';
+  }
+
+  const sentences = splitToSentences(normalized).filter((line) => line.length >= 8);
+  if (sentences.length === 0) {
+    return normalizeSpaces(normalized.slice(0, 220));
+  }
+
+  const ranked = sentences
+    .map((line, idx) => ({ line, idx, score: scoreSentence(line) }))
+    .sort((a, b) => b.score - a.score || a.idx - b.idx)
+    .slice(0, 3)
+    .sort((a, b) => a.idx - b.idx)
+    .map((item) => item.line.replace(/[。！？.!?；;]+$/, ''));
+
+  const picked = ranked.length ? ranked : sentences.slice(0, 3);
+  const merged = normalizeSpaces(picked.join('。'));
+  const clipped = merged.length > 320 ? `${merged.slice(0, 320)}...` : merged;
+
+  if (!clipped) {
+    return `已完成对《${filename}》的文本解析。`;
+  }
+
+  return clipped.endsWith('。') ? clipped : `${clipped}。`;
+};
+
 export class SourceParseService {
   public async parseBuffer(input: {
     filename: string;
@@ -33,10 +120,7 @@ export class SourceParseService {
       tokenEstimate: estimateTokens(content)
     }));
 
-    const summary =
-      chunks.length === 0
-        ? '未解析到有效文本内容'
-        : `已解析 ${chunks.length} 个文本分块，约 ${chunks.reduce((acc, it) => acc + it.tokenEstimate, 0)} tokens`;
+    const summary = buildReadableSummary(text, input.filename);
 
     return {
       summary,

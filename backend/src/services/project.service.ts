@@ -8,6 +8,8 @@ import {
   SourceStatus
 } from '../common/types/project';
 import { newId } from '../common/utils/id';
+import { llmService } from './llm/llm.service';
+import { modelConfigService } from './model-config.service';
 import { projectRepository } from '../repositories/project.repository';
 
 const mapProject = (row: {
@@ -38,6 +40,7 @@ const mapSource = (row: {
   status: SourceStatus;
   parse_summary: string | null;
   chunk_count: number;
+  parse_preview: string | null;
   created_at: Date;
   updated_at: Date;
 }): SourceRecord => ({
@@ -49,6 +52,7 @@ const mapSource = (row: {
   size: Number(row.file_size),
   status: row.status,
   parseSummary: row.parse_summary || undefined,
+  parsePreview: row.parse_preview || undefined,
   chunkCount: Number(row.chunk_count || 0),
   createdAt: new Date(row.created_at).toISOString(),
   updatedAt: new Date(row.updated_at).toISOString()
@@ -68,6 +72,114 @@ const mapChat = (row: {
   createdAt: new Date(row.created_at).toISOString()
 });
 
+const normalizeText = (text: string): string => {
+  return text.replace(/\r\n/g, '\n').replace(/\u00A0/g, ' ').replace(/[ \t]+/g, ' ').trim();
+};
+
+const stripMarkdownNoise = (text: string): string => {
+  return text
+    .replace(/^---[\s\S]*?---[\r\n]*/m, '')
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/^[-*+]\s+/gm, '')
+    .replace(/^\d+[.)、]\s+/gm, '')
+    .replace(/\[(cover|content|data)\]\s*/gi, '')
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/^\s*(title|date|author|tags|description|来源)\s*:\s*/gim, '')
+    .replace(/\n{2,}/g, '\n');
+};
+
+const isMetaLine = (line: string): boolean => {
+  if (!line) return true;
+  if (/^(小组|成员|汇报人|日期|来源)[:：]/.test(line)) return true;
+  if (/^[\W_]+$/.test(line)) return true;
+  return false;
+};
+
+const ensureSentenceEnd = (text: string): string => {
+  const trimmed = text.trim();
+  if (!trimmed) return '';
+  return /[。！？.!?]$/.test(trimmed) ? trimmed : `${trimmed}。`;
+};
+
+const makeAnalysisCacheKey = (userId: string, projectId: string): string => `${userId}:${projectId}`;
+
+const makeSourcesSignature = (sources: SourceRecord[]): string => {
+  return sources
+    .map((item) => `${item.id}:${item.status}:${item.updatedAt}:${item.chunkCount}`)
+    .sort()
+    .join('|');
+};
+
+const normalizeAiHighlight = (raw: string): string => {
+  const cleaned = stripMarkdownNoise(raw)
+    .replace(/\n+/g, ' ')
+    .replace(/[ \t]+/g, ' ')
+    .trim();
+
+  if (!cleaned) return '';
+
+  const clipped = cleaned.length > 520 ? `${cleaned.slice(0, 520)}...` : cleaned;
+  return ensureSentenceEnd(clipped);
+};
+
+const buildChatOnlyHighlight = (messages: string[]): string | undefined => {
+  const merged = messages
+    .map((line) => normalizeText(line))
+    .filter((line) => line.length >= 6)
+    .slice(-6)
+    .join('，');
+  if (!merged) return undefined;
+
+  const text = `当前项目暂无上传素材，本次分析基于你的需求描述：${merged}`;
+  return ensureSentenceEnd(text.length > 420 ? `${text.slice(0, 420)}...` : text);
+};
+
+const analysisHighlightCache = new Map<
+  string,
+  {
+    sourceSignature: string;
+    highlight: string;
+    refreshedAt: string;
+  }
+>();
+
+const buildHighlightParagraph = (sources: SourceRecord[]): string | undefined => {
+  const segments: string[] = [];
+
+  for (const source of sources) {
+    if (source.status !== 'success') continue;
+    const raw = normalizeText(source.parseSummary || source.parsePreview || '');
+    if (!raw) continue;
+
+    const cleaned = stripMarkdownNoise(raw);
+    const lines = cleaned
+      .split('\n')
+      .map((line) => normalizeText(line))
+      .filter((line) => line.length >= 8 && !isMetaLine(line));
+
+    for (const line of lines) {
+      segments.push(line);
+      if (segments.length >= 6) break;
+    }
+    if (segments.length >= 6) break;
+  }
+
+  if (!segments.length) return undefined;
+
+  const deduped = Array.from(new Set(segments)).slice(0, 4);
+  const merged = deduped
+    .map((item) => item.replace(/[。！？.!?]+$/g, '').trim())
+    .filter(Boolean)
+    .join('，');
+
+  if (!merged) return undefined;
+
+  const paragraph = `综合已解析素材，${merged}`;
+  const clipped = paragraph.length > 460 ? `${paragraph.slice(0, 460)}...` : paragraph;
+  return ensureSentenceEnd(clipped);
+};
+
 export class ProjectService {
   public async listProjects(userId: string): Promise<ProjectRecord[]> {
     const rows = await projectRepository.listProjectsByUserUuid(userId);
@@ -83,6 +195,39 @@ export class ProjectService {
     await projectRepository.createProject(userId, projectUuid, name.trim());
     const created = await this.getProject(userId, projectUuid);
     return created;
+  }
+
+  public async renameProject(userId: string, projectId: string, nextNameRaw: string): Promise<ProjectRecord> {
+    const name = String(nextNameRaw || '').trim();
+    if (!name) {
+      throw new AppError('project name is required', 400);
+    }
+    if (name.length > 255) {
+      throw new AppError('project name length must be <= 255', 400);
+    }
+
+    const result = await projectRepository.updateProjectName(userId, projectId, name);
+    if (!result.updated) {
+      throw new AppError('project not found', 404);
+    }
+
+    return this.getProject(userId, projectId);
+  }
+
+  public async deleteProject(
+    userId: string,
+    projectId: string
+  ): Promise<{
+    deleted: boolean;
+    sourceObjectKeys: string[];
+    exportFileKeys: string[];
+    slideImageKeys: string[];
+  }> {
+    const result = await projectRepository.deleteProjectByUser(userId, projectId);
+    if (!result.deleted) {
+      throw new AppError('project not found', 404);
+    }
+    return result;
   }
 
   public async getProject(userId: string, projectId: string): Promise<ProjectRecord> {
@@ -148,7 +293,27 @@ export class ProjectService {
   public async listSources(userId: string, projectId: string): Promise<SourceRecord[]> {
     await this.getProject(userId, projectId);
     const rows = await projectRepository.listSourcesByProject(userId, projectId);
-    return rows.map(mapSource);
+    const sources = rows.map(mapSource);
+
+    // Auto-timeout: mark sources stuck in 'parsing' for over 5 minutes as failed
+    const PARSE_TIMEOUT_MS = 5 * 60 * 1000;
+    const now = Date.now();
+    for (const source of sources) {
+      if (source.status === 'parsing') {
+        const age = now - new Date(source.updatedAt).getTime();
+        if (age > PARSE_TIMEOUT_MS) {
+          await projectRepository.updateSourceStatusBySourceUuid(
+            source.id,
+            'failed',
+            '解析超时：任务未在预期时间内完成。请检查 AI 模型配置是否正确，然后重试。'
+          );
+          source.status = 'failed';
+          source.parseSummary = '解析超时：任务未在预期时间内完成。请检查 AI 模型配置是否正确，然后重试。';
+        }
+      }
+    }
+
+    return sources;
   }
 
   public async deleteSource(
@@ -289,6 +454,33 @@ export class ProjectService {
     return rows.map(mapChat);
   }
 
+  public async deleteChatMessage(
+    userId: string,
+    projectId: string,
+    messageId: string
+  ): Promise<{ id: string; deleted: boolean }> {
+    if (!messageId?.trim()) {
+      throw new AppError('message id is required', 400);
+    }
+
+    await this.getProject(userId, projectId);
+    const result = await projectRepository.deleteChatMessageByUser(userId, projectId, messageId.trim());
+    if (!result.deleted) {
+      throw new AppError('chat message not found', 404);
+    }
+
+    return { id: messageId.trim(), deleted: true };
+  }
+
+  public async clearChatMessages(
+    userId: string,
+    projectId: string
+  ): Promise<{ projectId: string; deletedCount: number }> {
+    await this.getProject(userId, projectId);
+    const result = await projectRepository.clearChatMessagesByProject(userId, projectId);
+    return { projectId, deletedCount: result.deletedCount };
+  }
+
   public async listRecentUserChatContents(
     userId: string,
     projectId: string,
@@ -331,18 +523,21 @@ export class ProjectService {
       state = 'partial';
     }
 
-    const highlights: string[] = [];
-    for (const source of sources) {
-      if (source.status !== 'success') continue;
-      const raw = (source.parseSummary || '').trim();
-      if (!raw) continue;
-      highlights.push(raw.length > 120 ? `${raw.slice(0, 120)}...` : raw);
-      if (highlights.length >= 3) break;
-    }
+    const sourceSignature = makeSourcesSignature(sources);
+    const cacheKey = makeAnalysisCacheKey(userId, projectId);
+    const cachedHighlight = analysisHighlightCache.get(cacheKey);
+    const fallbackHighlight = buildHighlightParagraph(sources);
+    const effectiveHighlight =
+      cachedHighlight &&
+      cachedHighlight.sourceSignature === sourceSignature &&
+      cachedHighlight.highlight.trim()
+        ? cachedHighlight.highlight.trim()
+        : fallbackHighlight;
+    const highlights: string[] = effectiveHighlight ? [effectiveHighlight] : [];
 
     let summary = '';
     if (state === 'empty') {
-      summary = '当前项目还没有素材，请先上传 PDF/DOCX/TXT/MD/JSON/CSV 文件。';
+      summary = '当前项目还没有素材。你可以直接通过对话描述主题，系统也可以基于需求生成演示文稿。';
     } else if (state === 'parsing') {
       summary = `已上传 ${counts.total} 个素材，正在解析中，请稍后查看分析结果。`;
     } else if (state === 'ready') {
@@ -355,7 +550,7 @@ export class ProjectService {
 
     let nextAction = '';
     if (state === 'empty') {
-      nextAction = '上传素材后继续。';
+      nextAction = '可直接在对话框描述你要生成的主题，或先上传素材。';
     } else if (state === 'parsing') {
       nextAction = '等待解析完成，再进入对话调整。';
     } else if (state === 'ready') {
@@ -374,6 +569,81 @@ export class ProjectService {
       nextAction,
       updatedAt: project.updatedAt
     };
+  }
+
+  public async reanalyzeProjectAnalysisSummary(
+    userId: string,
+    projectId: string
+  ): Promise<ProjectAnalysisSummary> {
+    const modelConfig = await modelConfigService.getRawConfig(userId);
+    if (!modelConfig.analysis.apiKey.trim()) {
+      throw new AppError('请先在模型设置中配置分析模型 API Key，再执行重新分析。', 400);
+    }
+
+    const sources = await this.listSources(userId, projectId);
+    const successSources = sources.filter((item) => item.status === 'success');
+    const recentUserMessages = await this.listRecentUserChatContents(userId, projectId, 8);
+    const sourceChunks =
+      successSources.length > 0 ? await this.listSourceChunkContents(userId, projectId, 200) : [];
+    const sourceExcerpt = sourceChunks.join('\n\n').slice(0, 14000).trim();
+    const chatContext = recentUserMessages.join('\n').slice(0, 4000).trim();
+
+    if (!sourceExcerpt && !chatContext) {
+      throw new AppError('暂无可分析内容，请先上传素材或输入对话需求。', 400);
+    }
+
+    const prompt = [
+      '请基于下面信息生成一段中文分析文本。',
+      '要求：',
+      '1) 只输出一段正文，不要标题，不要列表，不要 Markdown。',
+      '2) 长度控制在 180-320 字。',
+      '3) 语气自然，风格接近 NotebookLM 的来源总结。',
+      '4) 不得编造事实；若缺少素材，请明确说明为“基于用户需求推导”。',
+      '',
+      sourceExcerpt ? '素材：' : '素材：无',
+      sourceExcerpt || '（无）',
+      '',
+      chatContext ? '用户需求对话：' : '用户需求对话：无',
+      chatContext || '（无）'
+    ].join('\n');
+
+    const answerRaw = await llmService.chat(
+      modelConfig,
+      [
+        {
+          role: 'system',
+          content: '你是严谨的中文资料分析助手。输出必须是单段落正文。'
+        },
+        {
+          role: 'user',
+          content: prompt
+        }
+      ],
+      {
+        temperature: 0.7,
+        maxTokens: 900
+      }
+    );
+
+    const aiHighlight = normalizeAiHighlight(answerRaw);
+    if (!aiHighlight) {
+      throw new AppError('AI 未返回有效分析内容，请重试。', 502);
+    }
+
+    const highlightForCache =
+      aiHighlight ||
+      (successSources.length === 0 ? buildChatOnlyHighlight(recentUserMessages) || '' : '');
+    if (!highlightForCache) {
+      throw new AppError('AI 未返回有效分析内容，请重试。', 502);
+    }
+
+    analysisHighlightCache.set(makeAnalysisCacheKey(userId, projectId), {
+      sourceSignature: makeSourcesSignature(sources),
+      highlight: highlightForCache,
+      refreshedAt: new Date().toISOString()
+    });
+
+    return this.getProjectAnalysisSummary(userId, projectId);
   }
 
   public async saveDeckSpec(userId: string, projectId: string, deckSpec: DeckSpec): Promise<ProjectRecord> {

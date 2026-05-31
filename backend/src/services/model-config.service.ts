@@ -11,17 +11,22 @@ import { modelConfigRepository } from '../repositories/model-config.repository';
 
 const defaultConfig: UserModelConfig = {
   analysis: {
-    provider: 'gpt',
-    baseUrl: 'https://api.openai.com/v1',
+    provider: 'openai',
+    baseUrl: 'https://api.aicodemirror.com/api/codex/backend-api/codex/v1',
     apiKey: '',
-    model: 'gpt-4.1'
+    model: 'gpt-5.5'
   },
   image: {
     _type: 'newapi_channel_conn',
-    url: 'https://api.openai.com/v1',
+    url: 'https://www.aiartmirror.com',
     key: '',
     model: 'gpt-image-2'
   }
+};
+
+const normalizeProvider = (value: string): UserModelConfig['analysis']['provider'] => {
+  if (value === 'anthropic' || value === 'claude') return 'anthropic';
+  return 'openai';
 };
 
 export class ModelConfigService {
@@ -53,7 +58,7 @@ export class ModelConfigService {
 
     return {
       analysis: {
-        provider: row.analysis_provider,
+        provider: normalizeProvider(row.analysis_provider),
         baseUrl: row.analysis_base_url,
         apiKey: decryptText(row.analysis_api_key_enc),
         model: row.analysis_model
@@ -88,17 +93,22 @@ export class ModelConfigService {
     analysis?: Partial<AnalysisModelConfig>;
     image?: Partial<ImageModelConfig>;
   }): { analysis: { ok: boolean; message: string }; image: { ok: boolean; message: string } } {
+    const analysisApiKey = (input.analysis?.apiKey || '').trim();
+    const imageApiKey = (input.image?.key || '').trim();
+
     const analysisOk = Boolean(
       input.analysis?.provider &&
         input.analysis?.baseUrl &&
-        input.analysis?.apiKey &&
+        analysisApiKey &&
+        !analysisApiKey.includes('*') &&
         input.analysis?.model
     );
     const imageOk = Boolean(
       input.image?._type === 'newapi_channel_conn' &&
         input.image?.url &&
-        input.image?.key &&
-        input.image?.model === 'gpt-image-2'
+        imageApiKey &&
+        !imageApiKey.includes('*') &&
+        input.image?.model
     );
 
     return {
@@ -114,8 +124,8 @@ export class ModelConfigService {
   }
 
   private validateInput(input: UserModelConfig): void {
-    if (!['gpt', 'claude'].includes(input.analysis.provider)) {
-      throw new AppError('analysis.provider must be gpt or claude', 400);
+    if (!['openai', 'anthropic'].includes(input.analysis.provider)) {
+      throw new AppError('analysis.provider must be openai or anthropic', 400);
     }
 
     if (!input.analysis.baseUrl || !input.analysis.model) {
@@ -126,16 +136,20 @@ export class ModelConfigService {
       throw new AppError('image._type must be newapi_channel_conn', 400);
     }
 
-    if (input.image.model !== 'gpt-image-2') {
-      throw new AppError('image.model must be gpt-image-2', 400);
+    if (!input.image.model) {
+      throw new AppError('image.model is required', 400);
     }
 
     if (!input.image.url) {
       throw new AppError('image.url is required', 400);
     }
 
-    if (!input.image.key) {
+    if (!input.image.key || input.image.key.includes('*')) {
       throw new AppError('image.key is required', 400);
+    }
+
+    if (!input.analysis.apiKey || input.analysis.apiKey.includes('*')) {
+      throw new AppError('analysis.apiKey is required', 400);
     }
   }
 }

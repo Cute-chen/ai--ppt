@@ -5,7 +5,7 @@ export type JobType =
   | 'slide-regenerate'
   | 'deck-export';
 
-export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed';
+export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled';
 
 export type JobRecord = {
   id: string;

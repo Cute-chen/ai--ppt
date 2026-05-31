@@ -106,6 +106,36 @@ export class JobRepository {
     );
   }
 
+  public async updateJobStatusIfCurrent(input: {
+    jobUuid: string;
+    expectedStatus: JobStatus;
+    status: JobStatus;
+    progress: number;
+    errorMessage?: string;
+    result?: Record<string, unknown>;
+  }): Promise<boolean> {
+    const result = await executeSql(
+      `UPDATE jobs
+       SET status = ?,
+           progress = ?,
+           error_message = ?,
+           result_json = ?,
+           updated_at = CURRENT_TIMESTAMP(3)
+       WHERE job_uuid = ?
+         AND status = ?`,
+      [
+        input.status,
+        input.progress,
+        input.errorMessage || null,
+        input.result ? JSON.stringify(input.result) : null,
+        input.jobUuid,
+        input.expectedStatus
+      ]
+    );
+
+    return result.affectedRows > 0;
+  }
+
   public async getJobByUser(jobUuid: string, userUuid: string): Promise<JobRow | undefined> {
     return one<JobRow>(
       `SELECT
@@ -143,6 +173,19 @@ export class JobRepository {
        LIMIT 1`,
       [jobUuid]
     );
+  }
+
+  public async deleteJobByUser(jobUuid: string, userUuid: string): Promise<{ deleted: boolean }> {
+    const result = await executeSql(
+      `DELETE j
+       FROM jobs j
+       INNER JOIN users u ON u.id = j.user_id
+       WHERE j.job_uuid = ?
+         AND u.user_uuid = ?`,
+      [jobUuid, userUuid]
+    );
+
+    return { deleted: result.affectedRows > 0 };
   }
 
   public async findLatestByType(

@@ -26,6 +26,7 @@ type SourceRow = {
   status: 'parsing' | 'success' | 'failed';
   parse_summary: string | null;
   chunk_count: number;
+  parse_preview: string | null;
   created_at: Date;
   updated_at: Date;
 };
@@ -179,6 +180,95 @@ export class ProjectRepository {
     );
   }
 
+  public async updateProjectName(
+    userUuid: string,
+    projectUuid: string,
+    name: string
+  ): Promise<{ updated: boolean }> {
+    const result = await executeSql(
+      `UPDATE projects p
+       INNER JOIN users u ON u.id = p.user_id
+       SET p.name = ?,
+           p.updated_at = CURRENT_TIMESTAMP(3)
+       WHERE u.user_uuid = ? AND p.project_uuid = ?`,
+      [name, userUuid, projectUuid]
+    );
+
+    return { updated: result.affectedRows > 0 };
+  }
+
+  public async deleteProjectByUser(
+    userUuid: string,
+    projectUuid: string
+  ): Promise<{ deleted: boolean; sourceObjectKeys: string[]; exportFileKeys: string[]; slideImageKeys: string[] }> {
+    const conn = await getDbPool().getConnection();
+
+    try {
+      await conn.beginTransaction();
+
+      const [projectRows] = await conn.query<RowDataPacket[]>(
+        `SELECT p.id AS project_id
+         FROM projects p
+         INNER JOIN users u ON u.id = p.user_id
+         WHERE u.user_uuid = ? AND p.project_uuid = ?
+         LIMIT 1
+         FOR UPDATE`,
+        [userUuid, projectUuid]
+      );
+
+      const projectId = Number(projectRows[0]?.project_id || 0);
+      if (!projectId) {
+        await conn.rollback();
+        return { deleted: false, sourceObjectKeys: [], exportFileKeys: [], slideImageKeys: [] };
+      }
+
+      const [sourceRows] = await conn.query<RowDataPacket[]>(
+        `SELECT object_key
+         FROM sources
+         WHERE project_id = ?`,
+        [projectId]
+      );
+      const [exportRows] = await conn.query<RowDataPacket[]>(
+        `SELECT file_key
+         FROM exports
+         WHERE project_id = ?`,
+        [projectId]
+      );
+      const [slideRows] = await conn.query<RowDataPacket[]>(
+        `SELECT ds.image_asset_key
+         FROM deck_slides ds
+         INNER JOIN decks d ON d.id = ds.deck_id
+         WHERE d.project_id = ?`,
+        [projectId]
+      );
+
+      const sourceObjectKeys = sourceRows
+        .map((row) => String(row.object_key || '').trim())
+        .filter(Boolean);
+      const exportFileKeys = exportRows
+        .map((row) => String(row.file_key || '').trim())
+        .filter(Boolean);
+      const slideImageKeys = slideRows
+        .map((row) => String(row.image_asset_key || '').trim())
+        .filter(Boolean);
+
+      await conn.execute('DELETE FROM projects WHERE id = ?', [projectId]);
+
+      await conn.commit();
+      return {
+        deleted: true,
+        sourceObjectKeys: Array.from(new Set(sourceObjectKeys)),
+        exportFileKeys: Array.from(new Set(exportFileKeys)),
+        slideImageKeys: Array.from(new Set(slideImageKeys))
+      };
+    } catch (error) {
+      await conn.rollback();
+      throw error;
+    } finally {
+      conn.release();
+    }
+  }
+
   public async createSource(
     userUuid: string,
     projectUuid: string,
@@ -232,7 +322,7 @@ export class ProjectRepository {
 
   public async listSourcesByProject(userUuid: string, projectUuid: string): Promise<SourceRow[]> {
     return queryRows<SourceRow>(
-      `SELECT
+       `SELECT
          s.source_uuid,
          p.project_uuid,
          s.filename,
@@ -242,6 +332,22 @@ export class ProjectRepository {
          s.status,
          s.parse_summary,
          COALESCE(sc.chunk_count, 0) AS chunk_count,
+         LEFT(
+           COALESCE(
+             (
+               SELECT GROUP_CONCAT(c.content ORDER BY c.chunk_index ASC SEPARATOR '\n\n')
+               FROM (
+                 SELECT chunk_index, content
+                 FROM source_chunks
+                 WHERE source_id = s.id
+                 ORDER BY chunk_index ASC
+                 LIMIT 3
+               ) c
+             ),
+             ''
+           ),
+           6000
+         ) AS parse_preview,
          s.created_at,
          s.updated_at
        FROM sources s
@@ -476,6 +582,42 @@ export class ProjectRepository {
        ORDER BY m.created_at ASC`,
       [userUuid, projectUuid]
     );
+  }
+
+  public async deleteChatMessageByUser(
+    userUuid: string,
+    projectUuid: string,
+    messageUuid: string
+  ): Promise<{ deleted: boolean }> {
+    const result = await executeSql(
+      `DELETE m
+       FROM chat_messages m
+       INNER JOIN projects p ON p.id = m.project_id
+       INNER JOIN users u ON u.id = p.user_id
+       WHERE u.user_uuid = ?
+         AND p.project_uuid = ?
+         AND m.message_uuid = ?`,
+      [userUuid, projectUuid, messageUuid]
+    );
+
+    return { deleted: result.affectedRows > 0 };
+  }
+
+  public async clearChatMessagesByProject(
+    userUuid: string,
+    projectUuid: string
+  ): Promise<{ deletedCount: number }> {
+    const result = await executeSql(
+      `DELETE m
+       FROM chat_messages m
+       INNER JOIN projects p ON p.id = m.project_id
+       INNER JOIN users u ON u.id = p.user_id
+       WHERE u.user_uuid = ?
+         AND p.project_uuid = ?`,
+      [userUuid, projectUuid]
+    );
+
+    return { deletedCount: Number(result.affectedRows || 0) };
   }
 
   public async listRecentUserChatContentsByProject(

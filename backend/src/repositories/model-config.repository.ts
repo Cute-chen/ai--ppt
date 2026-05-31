@@ -2,13 +2,13 @@ import { executeSql, one } from '../common/db/sql';
 
 type ModelConfigRow = {
   user_id: number;
-  analysis_provider: 'gpt' | 'claude';
+  analysis_provider: 'openai' | 'anthropic';
   analysis_base_url: string;
   analysis_model: string;
   analysis_api_key_enc: string;
   image_type: 'newapi_channel_conn';
   image_url: string;
-  image_model: 'gpt-image-2';
+  image_model: string;
   image_key_enc: string;
 };
 
@@ -36,13 +36,13 @@ export class ModelConfigRepository {
   public async upsertByUserUuid(
     userUuid: string,
     input: {
-      analysisProvider: 'gpt' | 'claude';
+      analysisProvider: 'openai' | 'anthropic';
       analysisBaseUrl: string;
       analysisModel: string;
       analysisApiKeyEnc: string;
       imageType: 'newapi_channel_conn';
       imageUrl: string;
-      imageModel: 'gpt-image-2';
+      imageModel: string;
       imageKeyEnc: string;
     }
   ): Promise<void> {

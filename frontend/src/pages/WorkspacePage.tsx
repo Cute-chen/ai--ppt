@@ -1,6 +1,7 @@
 import {
   ArrowLeftOutlined,
   CloudUploadOutlined,
+  ClearOutlined,
   DeleteOutlined,
   DownloadOutlined,
   FileImageOutlined,
@@ -53,6 +54,59 @@ function mapAnalysisStateTag(
   return { color: 'default', label: '待上传' }
 }
 
+type StructuredText = {
+  title: string
+  content: string
+}
+
+function toStructuredText(raw: string, fallbackTitle: string, fallbackContent: string): StructuredText {
+  const text = String(raw || '').replace(/\r\n/g, '\n').trim()
+  if (!text) {
+    return {
+      title: fallbackTitle,
+      content: fallbackContent,
+    }
+  }
+
+  const titleMatch = text.match(/(?:^|\n)\s*标题[:：]\s*(.+)/)
+  const contentMatch = text.match(/(?:^|\n)\s*内容[:：]\s*([\s\S]*)$/)
+  if (titleMatch || contentMatch) {
+    return {
+      title: (titleMatch?.[1] || fallbackTitle).trim(),
+      content: (contentMatch?.[1] || text).trim(),
+    }
+  }
+
+  const lines = text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+
+  if (lines.length === 0) {
+    return {
+      title: fallbackTitle,
+      content: fallbackContent,
+    }
+  }
+
+  const markdownTitle = lines.find((line) => /^#{1,6}\s+/.test(line))
+  if (markdownTitle) {
+    const title = markdownTitle.replace(/^#{1,6}\s+/, '').trim()
+    const content = lines.filter((line) => line !== markdownTitle).join('\n').trim()
+    return {
+      title: title || fallbackTitle,
+      content: content || fallbackContent,
+    }
+  }
+
+  const title = lines[0]
+  const content = lines.slice(1).join('\n').trim()
+  return {
+    title: title || fallbackTitle,
+    content: content || lines.join('\n'),
+  }
+}
+
 export default function WorkspacePage() {
   const { message } = App.useApp()
   const navigate = useNavigate()
@@ -63,6 +117,7 @@ export default function WorkspacePage() {
   const [sourceView, setSourceView] = useState<'list' | 'detail'>('list')
   const [customStyleText, setCustomStyleText] = useState('')
   const [assistantTyping, setAssistantTyping] = useState(false)
+  const [reAnalyzing, setReAnalyzing] = useState(false)
   const [messageTimes, setMessageTimes] = useState<string[]>([])
   const pendingAssistantRef = useRef(false)
   const chatScrollRef = useRef<HTMLDivElement | null>(null)
@@ -76,11 +131,12 @@ export default function WorkspacePage() {
     removeSource,
     uploadSource,
     statusText,
-    promptPresets,
     chatMessages,
     chatInput,
     setChatInput,
     sendChatMessage,
+    clearChatMessages,
+    deleteChatMessage,
     slides,
     selectedSlide,
     selectedSlideId,
@@ -94,6 +150,7 @@ export default function WorkspacePage() {
     selectedTemplateName,
     projectCustomStyle,
     projectAnalysisSummary,
+    refreshProjectAnalysisSummary,
     saveProjectCustomStyle,
     setProjectModalOpen,
   } = useWorkspaceData()
@@ -153,13 +210,13 @@ export default function WorkspacePage() {
       return
     }
 
-    if (latest.startsWith('助手：') || latest.startsWith('系统：')) {
+    if (latest.role === 'assistant' || latest.role === 'system') {
       pendingAssistantRef.current = false
       setAssistantTyping(false)
       return
     }
 
-    if (latest.startsWith('你：') && pendingAssistantRef.current) {
+    if (latest.role === 'user' && pendingAssistantRef.current) {
       setAssistantTyping(true)
     }
   }, [chatMessages])
@@ -221,7 +278,30 @@ export default function WorkspacePage() {
     } satisfies ProjectAnalysisSummaryDTO
   }, [projectAnalysisSummary, currentSources, sourceSuccessCount, sourceParsingCount, sourceFailedCount])
   const analysisStateTag = mapAnalysisStateTag(resolvedAnalysisSummary.state)
+  const isAnalysisEmpty = resolvedAnalysisSummary.state === 'empty'
   const templateDisplayName = projectCustomStyle ? '自定义' : selectedTemplateName
+  const sourceGuideStructured = useMemo(
+    () =>
+      toStructuredText(
+        selectedSource?.sourceGuide || '',
+        selectedSource?.name || '未命名素材',
+        '暂无来源指南。',
+      ),
+    [selectedSource?.sourceGuide, selectedSource?.name],
+  )
+  const sourcePreviewStructured = useMemo(
+    () =>
+      toStructuredText(
+        selectedSource?.parsePreview || '',
+        selectedSource?.name || '未命名素材',
+        '暂无解析预览。',
+      ),
+    [selectedSource?.parsePreview, selectedSource?.name],
+  )
+  const highlightText = useMemo(() => {
+    const text = resolvedAnalysisSummary.highlights[0] || ''
+    return text.trim()
+  }, [resolvedAnalysisSummary.highlights])
 
   const doneSlideCount = slides.filter((item) => item.imageState === 'done').length
   const deckProgress = slides.length ? Math.round((doneSlideCount / slides.length) * 100) : 0
@@ -320,7 +400,34 @@ export default function WorkspacePage() {
     })
   }
 
+  function handleClearChat() {
+    void clearChatMessages()
+      .then(() => {
+        void message.success('已清空当前项目对话')
+      })
+      .catch((error) => {
+        const msg = error instanceof Error ? error.message : '清空对话失败'
+        void message.error(msg)
+      })
+  }
+
+  function handleDeleteChatMessage(messageId: string) {
+    void deleteChatMessage(messageId)
+      .then(() => {
+        void message.success('已删除该条对话')
+      })
+      .catch((error) => {
+        const msg = error instanceof Error ? error.message : '删除对话失败'
+        void message.error(msg)
+      })
+  }
+
   function handleGenerateDeck() {
+    if (currentSources.length === 0 && !chatMessages.some((item) => item.startsWith('你：'))) {
+      void message.warning('当前无素材，请先输入需求再点击整套生成。例如：帮我做一份“猫为什么是液体”的PPT。')
+      return
+    }
+
     void generateDeck()
       .then(() => {
         void message.success('已创建整套生成任务')
@@ -376,14 +483,61 @@ export default function WorkspacePage() {
       })
   }
 
+  function handleReAnalyze() {
+    setReAnalyzing(true)
+    const beforeText = highlightText
+    void refreshProjectAnalysisSummary()
+      .then((summary) => {
+        const afterText = (summary.highlights?.[0] || '').trim()
+        if (afterText && afterText !== beforeText.trim()) {
+          void message.success('已完成重新分析，关键要点已更新')
+          return
+        }
+        void message.warning('已重新分析，但关键要点与上次一致')
+      })
+      .catch((error) => {
+        const msg = error instanceof Error ? error.message : '重新分析失败'
+        void message.error(msg)
+      })
+      .finally(() => {
+        setReAnalyzing(false)
+      })
+  }
+
   function goCreateProject() {
     setProjectModalOpen(true)
     void navigate('/projects')
   }
 
+  function goBack() {
+    if (window.history.length > 1) {
+      navigate(-1)
+      return
+    }
+    void navigate('/projects')
+  }
+
+  const workspaceTopbar = (
+    <div className="workspace-standalone-topbar">
+      <Space size={10}>
+        <Button icon={<ArrowLeftOutlined />} onClick={goBack}>
+          返回
+        </Button>
+        <div className="workspace-standalone-path">
+          <Typography.Text className="workspace-standalone-crumb">工作台</Typography.Text>
+          <Typography.Text className="workspace-standalone-sep">/</Typography.Text>
+          <Typography.Text className="workspace-standalone-project-name">
+            {activeProject?.name ?? '未选择项目'}
+          </Typography.Text>
+        </div>
+      </Space>
+    </div>
+  )
+
   if (!activeProject?.id) {
     return (
-      <div className="page-shell">
+      <div className="page-shell workspace-standalone-shell">
+        {workspaceTopbar}
         <div className="workspace-access-guard">
           <div className="workspace-access-card">
             <Typography.Text className="workspace-access-badge">工作台入口</Typography.Text>
@@ -408,7 +562,8 @@ export default function WorkspacePage() {
   }
 
   return (
-    <div className="page-shell">
+    <div className="page-shell workspace-standalone-shell">
+      {workspaceTopbar}
       <div className="workspace-layout">
         <section className="ws-panel">
           <div className="panel-header-row ws-panel-header-row">
@@ -460,16 +615,20 @@ export default function WorkspacePage() {
                             <span>{item.ext.toUpperCase()}</span>
                             <span>· {item.chunks ? `${item.chunks}块` : '处理中'}</span>
                             <span className={statusDotClass(item.status)}>● {statusText(item.status)}</span>
+                            {item.status === 'parsing' && item.parsingElapsedMs > 90_000 && (
+                              <span style={{ color: '#d97706', fontWeight: 600 }}>⚠ 超时</span>
+                            )}
                           </div>
                         </div>
                       </div>
 
                       <div className="source-actions">
-                        {item.status === 'failed' ? (
+                        {(item.status === 'failed' || (item.status === 'parsing' && item.parsingElapsedMs > 90_000)) ? (
                           <Button
                             size="small"
                             type="text"
                             icon={<ReloadOutlined />}
+                            title="重新解析"
                             onClick={(event) => {
                               event.stopPropagation()
                               handleRetrySource(item.id)
@@ -505,14 +664,26 @@ export default function WorkspacePage() {
                     <Typography.Text strong style={{ fontSize: 13 }}>
                       来源指南
                     </Typography.Text>
-                    <Typography.Paragraph style={{ marginTop: 8, marginBottom: 10, color: '#4d556b' }}>
-                      {selectedSource.sourceGuide}
+                    <Typography.Paragraph style={{ marginTop: 8, marginBottom: 6, color: '#4d556b' }}>
+                      <strong>标题：</strong>
+                      {sourceGuideStructured.title}
+                    </Typography.Paragraph>
+                    <Typography.Paragraph style={{ marginTop: 0, marginBottom: 10, color: '#4d556b' }}>
+                      <strong>内容：</strong>
+                      {sourceGuideStructured.content}
                     </Typography.Paragraph>
 
                     <Typography.Text strong style={{ fontSize: 13 }}>
                       解析预览
                     </Typography.Text>
-                    <pre className="source-preview-block">{selectedSource.parsePreview}</pre>
+                    <Typography.Paragraph style={{ marginTop: 8, marginBottom: 6, color: '#4d556b' }}>
+                      <strong>标题：</strong>
+                      {sourcePreviewStructured.title}
+                    </Typography.Paragraph>
+                    <Typography.Paragraph style={{ marginTop: 0, marginBottom: 6, color: '#4d556b' }}>
+                      <strong>内容：</strong>
+                    </Typography.Paragraph>
+                    <pre className="source-preview-block">{sourcePreviewStructured.content}</pre>
                   </>
                 ) : (
                   <div className="source-empty">暂无可展示的来源详情。</div>
@@ -537,6 +708,33 @@ export default function WorkspacePage() {
                 {currentSources.filter((item) => item.status === 'success').length} / {currentSources.length}{' '}
                 个文件已可用
               </Typography.Text>
+              {currentSources.some((item) => item.status === 'parsing' && item.parsingElapsedMs > 90_000) && (
+                <div
+                  style={{
+                    marginTop: 10,
+                    padding: '8px 10px',
+                    borderRadius: 8,
+                    background: '#fefce8',
+                    border: '1px solid #fde68a',
+                    fontSize: 12,
+                    color: '#92400e',
+                    lineHeight: 1.6,
+                  }}
+                >
+                  <strong>⚠ 解析时间过长</strong>
+                  <br />
+                  可能原因：AI 模型未配置或配置有误、网络超时。
+                  <br />
+                  请前往
+                  <Typography.Link
+                    href="/model-settings"
+                    style={{ fontSize: 12, marginInline: 4 }}
+                  >
+                    模型设置
+                  </Typography.Link>
+                  检查配置，然后点击素材旁的重试按钮。
+                </div>
+              )}
             </div>
           </div>
         </section>
@@ -548,6 +746,16 @@ export default function WorkspacePage() {
                 AI 分析与提示词助手
               </Typography.Title>
             </div>
+            <Space size={8}>
+              <Button
+                size="small"
+                icon={<ClearOutlined />}
+                disabled={chatMessages.length === 0 || assistantTyping}
+                onClick={handleClearChat}
+              >
+                清空对话
+              </Button>
+            </Space>
           </div>
 
           <div className="ws-panel-body">
@@ -560,36 +768,51 @@ export default function WorkspacePage() {
                   {analysisStateTag.label}
                 </Tag>
               </div>
-              <Typography.Paragraph style={{ marginTop: 8, marginBottom: 0, color: '#4d556b' }}>
-                {resolvedAnalysisSummary.summary}
-              </Typography.Paragraph>
-              <Typography.Paragraph style={{ marginTop: 8, marginBottom: 0, color: '#697089', fontSize: 12 }}>
-                素材统计：共 {resolvedAnalysisSummary.counts.total}，成功 {resolvedAnalysisSummary.counts.success}，解析中{' '}
-                {resolvedAnalysisSummary.counts.parsing}，失败 {resolvedAnalysisSummary.counts.failed}
-              </Typography.Paragraph>
-              {resolvedAnalysisSummary.highlights.length ? (
+              {!isAnalysisEmpty ? (
                 <Typography.Paragraph style={{ marginTop: 8, marginBottom: 0, color: '#4d556b' }}>
-                  关键要点：{resolvedAnalysisSummary.highlights.join('；')}
+                  {resolvedAnalysisSummary.summary}
                 </Typography.Paragraph>
               ) : null}
-              <Typography.Paragraph style={{ marginTop: 8, marginBottom: 0, color: '#4d556b' }}>
-                下一步：{resolvedAnalysisSummary.nextAction}
-              </Typography.Paragraph>
+              {highlightText ? (
+                <div style={{ marginTop: 10 }}>
+                  <Typography.Text strong style={{ fontSize: 13, color: '#4d556b' }}>
+                    关键要点
+                  </Typography.Text>
+                  <Typography.Paragraph style={{ marginTop: 8, marginBottom: 0, color: '#4d556b' }}>
+                    {highlightText}
+                  </Typography.Paragraph>
+                </div>
+              ) : null}
+              <div style={{ marginTop: 12, display: 'flex', justifyContent: 'flex-end' }}>
+                <Button size="small" loading={reAnalyzing} onClick={handleReAnalyze}>
+                  重新分析
+                </Button>
+              </div>
             </div>
 
             <div className="ai-dialog-shell">
               <div className="chat-scroll" ref={chatScrollRef}>
                 {chatMessages.map((item, index) => {
-                  const isUser = item.startsWith('你：')
-                  const role = item.startsWith('系统：') ? '系统' : isUser ? '你' : 'AI'
-                  const content = item.replace(/^(你|助手|系统)：/, '')
+                  const isUser = item.role === 'user'
+                  const role = item.role === 'system' ? '系统' : isUser ? '你' : 'AI'
+                  const content = item.content
                   const timeText = messageTimes[index] ?? ''
                   return (
-                    <div key={`${item}-${index}`} className={isUser ? 'chat-row chat-row-user' : 'chat-row'}>
+                    <div key={item.id} className={isUser ? 'chat-row chat-row-user' : 'chat-row'}>
                       <div className={isUser ? 'chat-role chat-role-user' : 'chat-role'}>{role}</div>
                       <div className={isUser ? 'chat-bubble-wrap chat-bubble-wrap-user' : 'chat-bubble-wrap'}>
                         <div className={isUser ? 'chat-msg chat-msg-user' : 'chat-msg'}>{content}</div>
-                        <div className={isUser ? 'chat-time chat-time-user' : 'chat-time'}>{timeText}</div>
+                        <div className={isUser ? 'chat-time chat-time-user' : 'chat-time'}>
+                          {timeText}
+                          {!item.transient ? (
+                            <Button
+                              type="text"
+                              size="small"
+                              icon={<DeleteOutlined />}
+                              onClick={() => handleDeleteChatMessage(item.id)}
+                            />
+                          ) : null}
+                        </div>
                       </div>
                     </div>
                   )
@@ -609,13 +832,6 @@ export default function WorkspacePage() {
 
             <div className="ai-action-card">
               <Typography.Text className="ai-action-label">快捷提问</Typography.Text>
-              <div className="ws-preset-row">
-                {promptPresets.map((item) => (
-                  <Button key={item.id} className="ws-preset-btn" onClick={() => setChatInput(item.text)}>
-                    {item.text}
-                  </Button>
-                ))}
-              </div>
 
               <div className="ws-chat-input-row">
                 <Input

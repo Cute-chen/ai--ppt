@@ -5,6 +5,7 @@ import {
   apiPatch,
   apiPost,
   apiPut,
+  buildApiHeaders,
   clearAccessToken,
   getAccessToken,
   setAccessToken,
@@ -14,6 +15,7 @@ import type {
   AnalysisModelConfig,
   AnalysisProvider,
   ChatMessageDTO,
+  UiChatMessage,
   DeckDTO,
   ImageModelConfig,
   JobDTO,
@@ -105,9 +107,26 @@ type ChatCreateResponse = {
   assistant: ChatMessageDTO
 }
 
+type ChatStreamStartEvent = {
+  event: 'start'
+  data: { user: ChatMessageDTO }
+}
+
+type ChatStreamDeltaEvent = {
+  event: 'delta'
+  data: { text: string }
+}
+
+type ChatStreamDoneEvent = {
+  event: 'done'
+  data: { assistant: ChatMessageDTO; fallback?: boolean; partial?: boolean }
+}
+
+type ChatStreamEvent = ChatStreamStartEvent | ChatStreamDeltaEvent | ChatStreamDoneEvent
+
 type ModelConfigMaskedResponse = {
   analysis: {
-    provider: 'gpt' | 'claude'
+    provider: 'openai' | 'anthropic'
     baseUrl: string
     model: string
     apiKeyMasked: string
@@ -115,7 +134,7 @@ type ModelConfigMaskedResponse = {
   image: {
     _type: 'newapi_channel_conn'
     url: string
-    model: 'gpt-image-2'
+    model: string
     keyMasked: string
   }
 }
@@ -130,6 +149,10 @@ type SourceReparseResponse = {
 }
 
 type JobRetryResponse = {
+  job: JobDTO
+}
+
+type JobCancelResponse = {
   job: JobDTO
 }
 
@@ -148,7 +171,7 @@ type AppStoreValue = {
   jobs: JobItem[]
   showOnlyFailedJobs: boolean
   chatInput: string
-  chatMessages: string[]
+  chatMessages: UiChatMessage[]
   slides: SlideItem[]
   selectedSlideId: string
   slideTone: 'business' | 'academic' | 'tech'
@@ -190,16 +213,23 @@ type AppStoreValue = {
   refreshCurrentUser: () => Promise<void>
   logout: () => void
   createProject: () => Promise<void>
+  renameProject: (projectId: string, name: string) => Promise<void>
+  deleteProject: (projectId: string) => Promise<void>
   openProject: (projectId: string) => void
   uploadSource: (file: File) => Promise<void>
   retrySource: (sourceId: string) => Promise<void>
   removeSource: (sourceId: string) => Promise<void>
   retryJob: (jobId: string) => Promise<void>
+  cancelJob: (jobId: string) => Promise<void>
+  deleteJob: (jobId: string) => Promise<void>
   sendChatMessage: () => Promise<void>
+  clearChatMessages: () => Promise<void>
+  deleteChatMessage: (messageId: string) => Promise<void>
   generateDeck: () => Promise<void>
   regenerateSlideImage: (slideId: string) => Promise<void>
   updateSlideText: (slideId: string, text: string) => Promise<void>
   exportDeck: (format: 'pptx' | 'pdf') => Promise<void>
+  refreshProjectAnalysisSummary: () => Promise<ProjectAnalysisSummaryDTO>
   saveProjectCustomStyle: (customStyle: string) => Promise<void>
   validateAndSaveConfig: () => Promise<void>
 }
@@ -233,12 +263,12 @@ function getExt(name: string) {
   return name.slice(idx + 1).toLowerCase()
 }
 
-function toAnalysisProvider(provider: 'gpt' | 'claude'): AnalysisProvider {
-  return provider === 'claude' ? 'anthropic' : 'openai'
+function toAnalysisProvider(provider: 'openai' | 'anthropic'): AnalysisProvider {
+  return provider
 }
 
-function toBackendAnalysisProvider(provider: AnalysisProvider): 'gpt' | 'claude' {
-  return provider === 'anthropic' ? 'claude' : 'gpt'
+function toBackendAnalysisProvider(provider: AnalysisProvider): 'openai' | 'anthropic' {
+  return provider
 }
 
 function normalizeProgress(value: number): number {
@@ -256,6 +286,20 @@ function parseProjectIdFromPayload(payload: Record<string, unknown>): string | u
   return undefined
 }
 
+function newTempId(prefix: string): string {
+  const rand = Math.random().toString(36).slice(2, 8)
+  return `${prefix}-${Date.now()}-${rand}`
+}
+
+function toUiChatMessage(dto: ChatMessageDTO): UiChatMessage {
+  return {
+    id: dto.id,
+    role: dto.role,
+    content: dto.content,
+    createdAt: dto.createdAt,
+  }
+}
+
 function statusText(status: SourceStatus | JobStatus | ProjectStatus) {
   switch (status) {
     case 'parsing':
@@ -266,6 +310,8 @@ function statusText(status: SourceStatus | JobStatus | ProjectStatus) {
       return '成功'
     case 'failed':
       return '失败'
+    case 'canceled':
+      return '已取消'
     case 'queued':
       return '排队中'
     case 'running':
@@ -307,23 +353,44 @@ function toSlideItems(deck: DeckDTO | undefined): SlideItem[] {
 }
 
 function toSourceItems(sourceRows: SourceDTO[], projectName: string): SourceItem[] {
-  return sourceRows.map((source) => ({
-    id: source.id,
-    name: source.filename,
-    ext: getExt(source.filename),
-    status: source.status,
-    chunks: Number(source.chunkCount || 0),
-    updatedAt: formatTime(source.updatedAt),
-    projectName,
-    sourceGuide:
+  const now = Date.now()
+  return sourceRows.map((source) => {
+    const parsingElapsedMs =
+      source.status === 'parsing'
+        ? Math.max(0, now - new Date(source.updatedAt).getTime())
+        : 0
+
+    const isStuck = parsingElapsedMs > 90_000 // warn after 90s
+
+    const sourceGuide =
       source.parseSummary ||
       (source.status === 'failed'
-        ? '来源解析失败，请检查文件后重试。'
+        ? source.parseSummary || '来源解析失败，请检查文件后重试。'
         : source.status === 'parsing'
-          ? '来源正在解析中，稍后会更新解析结果。'
-          : '来源解析成功，可用于对话与生成。'),
-    parsePreview: source.parseSummary || '暂无结构化摘要。',
-  }))
+          ? isStuck
+            ? '解析时间较长，可能是 AI 模型配置有误或网络超时。请检查模型设置后点击重试。'
+            : '来源正在解析中，稍后会更新解析结果。'
+          : '来源解析成功，可用于对话与生成。')
+
+    return {
+      id: source.id,
+      name: source.filename,
+      ext: getExt(source.filename),
+      status: source.status,
+      chunks: Number(source.chunkCount || 0),
+      updatedAt: formatTime(source.updatedAt),
+      parsingElapsedMs,
+      projectName,
+      sourceGuide,
+      parsePreview:
+        source.parsePreview ||
+        (source.status === 'success'
+          ? '暂无原文预览。'
+          : source.status === 'parsing'
+            ? '来源正在解析中，完成后会展示文档原文预览。'
+            : '解析失败，暂无可展示的原文预览。'),
+    }
+  })
 }
 
 export function AppStoreProvider({ children }: PropsWithChildren) {
@@ -345,9 +412,7 @@ export function AppStoreProvider({ children }: PropsWithChildren) {
   const [showOnlyFailedJobs, setShowOnlyFailedJobs] = useState(false)
 
   const [chatInput, setChatInput] = useState('')
-  const [chatMessages, setChatMessages] = useState<string[]>([
-    '系统：解析内容已就绪，可基于当前素材继续提问或创作内容。',
-  ])
+  const [chatMessages, setChatMessages] = useState<UiChatMessage[]>([])
 
   const [slides, setSlides] = useState<SlideItem[]>([])
   const [selectedSlideId, setSelectedSlideId] = useState('')
@@ -361,6 +426,7 @@ export function AppStoreProvider({ children }: PropsWithChildren) {
     provider: 'openai',
     baseUrl: ANALYSIS_PROVIDER_DEFAULTS.openai.baseUrl,
     apiKey: '',
+    apiKeyMasked: '',
     model: ANALYSIS_PROVIDER_DEFAULTS.openai.model,
   })
 
@@ -368,6 +434,7 @@ export function AppStoreProvider({ children }: PropsWithChildren) {
     _type: 'newapi_channel_conn',
     url: 'https://www.aiartmirror.com',
     key: '',
+    keyMasked: '',
     model: 'gpt-image-2',
   })
 
@@ -475,7 +542,7 @@ export function AppStoreProvider({ children }: PropsWithChildren) {
     if (!projectId) {
       setSources([])
       setSlides([])
-      setChatMessages(['系统：解析内容已就绪，可基于当前素材继续提问或创作内容。'])
+      setChatMessages([])
       setProjectCustomStyle('')
       setProjectAnalysisSummary(null)
       return
@@ -491,12 +558,7 @@ export function AppStoreProvider({ children }: PropsWithChildren) {
     const mappedSources = toSourceItems(sourceRows, project.name)
 
     const mappedSlides = toSlideItems(project.deckSpec)
-    const mappedMessages = chatRows.length
-      ? chatRows.map((msg) => {
-          const roleLabel = msg.role === 'user' ? '你' : msg.role === 'assistant' ? '助手' : '系统'
-          return `${roleLabel}：${msg.content}`
-        })
-      : ['系统：解析内容已就绪，可基于当前素材继续提问或创作内容。']
+    const mappedMessages = chatRows.map(toUiChatMessage)
 
     setSources(mappedSources)
     setSlides(mappedSlides)
@@ -534,18 +596,28 @@ export function AppStoreProvider({ children }: PropsWithChildren) {
     if (!isLoggedIn) return
 
     const data = await apiGet<ModelConfigMaskedResponse>('/api/me/model-config')
+    const nextAnalysisKey =
+      data.analysis.apiKeyMasked && !data.analysis.apiKeyMasked.includes('*')
+        ? data.analysis.apiKeyMasked
+        : ''
+    const nextImageKey =
+      data.image.keyMasked && !data.image.keyMasked.includes('*')
+        ? data.image.keyMasked
+        : ''
     setAnalysisConfigState((prev) => ({
       ...prev,
       provider: toAnalysisProvider(data.analysis.provider),
       baseUrl: data.analysis.baseUrl,
-      apiKey: data.analysis.apiKeyMasked || prev.apiKey,
+      apiKey: nextAnalysisKey || prev.apiKey,
+      apiKeyMasked: data.analysis.apiKeyMasked || prev.apiKeyMasked,
       model: data.analysis.model,
     }))
     setImageConfigState((prev) => ({
       ...prev,
       _type: data.image._type,
       url: data.image.url,
-      key: data.image.keyMasked || prev.key,
+      key: nextImageKey || prev.key,
+      keyMasked: data.image.keyMasked || prev.keyMasked,
       model: data.image.model,
     }))
   }, [isLoggedIn])
@@ -626,7 +698,7 @@ export function AppStoreProvider({ children }: PropsWithChildren) {
     setSources([])
     setJobs([])
     setSlides([])
-    setChatMessages(['系统：解析内容已就绪，可基于当前素材继续提问或创作内容。'])
+    setChatMessages([])
     setProjectCustomStyle('')
     setProjectAnalysisSummary(null)
   }, [])
@@ -659,6 +731,59 @@ export function AppStoreProvider({ children }: PropsWithChildren) {
     }
     setNewProjectName('')
     setProjectModalOpen(false)
+  }
+
+  async function renameProject(projectId: string, nameRaw: string): Promise<void> {
+    const name = nameRaw.trim()
+    if (!name) {
+      throw new Error('项目名称不能为空')
+    }
+
+    await apiPatch<ProjectDTO>(`/api/projects/${projectId}`, { name })
+
+    const [rows, jobRows] = await Promise.all([apiGet<ProjectDTO[]>('/api/projects'), fetchAllJobs()])
+
+    const nextProjects: ProjectItem[] = rows.map((project) => {
+      const projectJobs = jobRows.filter((job) => parseProjectIdFromPayload(job.payload) === project.id)
+      return {
+        id: project.id,
+        name: project.name,
+        slideCount: project.deckSpec?.slides?.length || 0,
+        status: deriveProjectStatus(project, projectJobs),
+        updatedAt: formatTime(project.updatedAt),
+      }
+    })
+
+    setProjects(nextProjects)
+    setJobs(mapJobs(jobRows, rows))
+
+    if (!nextProjects.some((project) => project.id === activeProjectId)) {
+      setActiveProjectId(nextProjects[0]?.id || '')
+    }
+  }
+
+  async function deleteProject(projectId: string): Promise<void> {
+    await apiDelete<{ id: string; deleted: boolean }>(`/api/projects/${projectId}`)
+
+    const [rows, jobRows] = await Promise.all([apiGet<ProjectDTO[]>('/api/projects'), fetchAllJobs()])
+
+    const nextProjects: ProjectItem[] = rows.map((project) => {
+      const projectJobs = jobRows.filter((job) => parseProjectIdFromPayload(job.payload) === project.id)
+      return {
+        id: project.id,
+        name: project.name,
+        slideCount: project.deckSpec?.slides?.length || 0,
+        status: deriveProjectStatus(project, projectJobs),
+        updatedAt: formatTime(project.updatedAt),
+      }
+    })
+
+    setProjects(nextProjects)
+    setJobs(mapJobs(jobRows, rows))
+
+    if (projectId === activeProjectId || !nextProjects.some((project) => project.id === activeProjectId)) {
+      setActiveProjectId(nextProjects[0]?.id || '')
+    }
   }
 
   function openProject(projectId: string) {
@@ -721,28 +846,227 @@ export function AppStoreProvider({ children }: PropsWithChildren) {
     }
   }
 
+  async function cancelJob(jobId: string): Promise<void> {
+    await apiPost<JobCancelResponse>(`/api/jobs/${jobId}/cancel`, {})
+    await reloadJobs()
+    if (activeProject?.id) {
+      await refreshProjectRuntime(activeProject.id)
+    }
+  }
+
+  async function deleteJob(jobId: string): Promise<void> {
+    await apiDelete<{ id: string; deleted: boolean }>(`/api/jobs/${jobId}`)
+    await reloadJobs()
+    if (activeProject?.id) {
+      await refreshProjectRuntime(activeProject.id)
+    }
+  }
+
   async function sendChatMessage(): Promise<void> {
     const text = chatInput.trim()
     if (!text || !activeProject?.id) {
       return
     }
 
+    const projectId = activeProject.id
     setChatInput('')
-    const data = await apiPost<ChatCreateResponse>(`/api/projects/${activeProject.id}/chat/messages`, {
-      content: text,
-    })
+    const tempUserId = newTempId('temp-user')
+    const tempAssistantId = newTempId('temp-assistant')
+    const tempCreatedAt = new Date().toISOString()
 
     setChatMessages((prev) => [
       ...prev,
-      `你：${data.user.content}`,
-      `助手：${data.assistant.content}`,
+      {
+        id: tempUserId,
+        role: 'user',
+        content: text,
+        createdAt: tempCreatedAt,
+        transient: true,
+      },
+      {
+        id: tempAssistantId,
+        role: 'assistant',
+        content: '...',
+        createdAt: tempCreatedAt,
+        transient: true,
+      },
     ])
+
+    let assistantDraft = ''
+    let streamDone = false
+    let streamStarted = false
+    let streamUserMessage: ChatMessageDTO | null = null
+    let streamAssistantMessage: ChatMessageDTO | null = null
+    try {
+      const resp = await fetch(withApiBase(`/api/projects/${projectId}/chat/messages/stream`), {
+        method: 'POST',
+        headers: buildApiHeaders(
+          {
+            'Content-Type': 'application/json',
+            Accept: 'application/x-ndjson',
+          },
+          { skipAuth: false },
+        ),
+        body: JSON.stringify({ content: text }),
+      })
+
+      if (!resp.ok) {
+        throw new Error(`stream request failed: ${resp.status}`)
+      }
+      if (!resp.body) {
+        throw new Error('stream body is empty')
+      }
+
+      const reader = resp.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+
+      const applyAssistantDraft = (draft: string) => {
+        setChatMessages((prev) => {
+          return prev.map((item) =>
+            item.id === tempAssistantId
+              ? {
+                  ...item,
+                  content: draft || '...',
+                }
+              : item,
+          )
+        })
+      }
+
+      const handleStreamLine = (lineRaw: string) => {
+        const line = lineRaw.trim()
+        if (!line) return
+
+        const event = JSON.parse(line) as ChatStreamEvent
+        if (event.event === 'start') {
+          streamUserMessage = event.data.user
+          setChatMessages((prev) =>
+            prev.map((item) =>
+              item.id === tempUserId ? { ...toUiChatMessage(event.data.user), transient: false } : item,
+            ),
+          )
+          streamStarted = true
+          return
+        }
+        if (event.event === 'delta') {
+          assistantDraft += event.data.text || ''
+          applyAssistantDraft(assistantDraft)
+          return
+        }
+        if (event.event === 'done') {
+          streamDone = true
+          streamAssistantMessage = event.data.assistant
+          const finalText = event.data.assistant?.content?.trim() || assistantDraft || text
+          assistantDraft = finalText
+          setChatMessages((prev) =>
+            prev.map((item) =>
+              item.id === tempAssistantId
+                ? {
+                    ...toUiChatMessage(event.data.assistant),
+                    content: assistantDraft,
+                    transient: false,
+                  }
+                : item,
+            ),
+          )
+        }
+      }
+
+      while (true) {
+        const { value, done } = await reader.read()
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+        let lineBreakIndex = buffer.indexOf('\n')
+        while (lineBreakIndex >= 0) {
+          const line = buffer.slice(0, lineBreakIndex)
+          buffer = buffer.slice(lineBreakIndex + 1)
+          handleStreamLine(line)
+          lineBreakIndex = buffer.indexOf('\n')
+        }
+      }
+
+      buffer += decoder.decode()
+      const tail = buffer.trim()
+      if (tail) {
+        handleStreamLine(tail)
+      }
+
+      if (!streamStarted || !streamDone) {
+        throw new Error('stream ended unexpectedly')
+      }
+    } catch {
+      if (streamStarted) {
+        if (!assistantDraft.trim()) {
+          setChatMessages((prev) => {
+            return prev.map((item) =>
+              item.id === tempAssistantId
+                ? {
+                    ...item,
+                    content: '流式回复中断，请重试。',
+                    transient: false,
+                  }
+                : item,
+            )
+          })
+        }
+        throw new Error('流式回复中断，请重试')
+      }
+
+      setChatMessages((prev) => {
+        return prev.filter((item) => item.id !== tempUserId && item.id !== tempAssistantId)
+      })
+
+      const data = await apiPost<ChatCreateResponse>(`/api/projects/${projectId}/chat/messages`, {
+        content: text,
+      })
+
+      setChatMessages((prev) => [...prev, toUiChatMessage(data.user), toUiChatMessage(data.assistant)])
+      return
+    }
+
+    if (!streamUserMessage || !streamAssistantMessage) {
+      setChatMessages((prev) => prev.filter((item) => item.id !== tempUserId && item.id !== tempAssistantId))
+      const data = await apiPost<ChatCreateResponse>(`/api/projects/${projectId}/chat/messages`, {
+        content: text,
+      })
+      setChatMessages((prev) => [...prev, toUiChatMessage(data.user), toUiChatMessage(data.assistant)])
+    }
+  }
+
+  async function clearChatMessages(): Promise<void> {
+    if (!activeProject?.id) {
+      throw new Error('请先选择项目')
+    }
+
+    await apiDelete<{ projectId: string; deletedCount: number }>(`/api/projects/${activeProject.id}/chat/messages`)
+    setChatMessages([])
+  }
+
+  async function deleteChatMessage(messageId: string): Promise<void> {
+    if (!activeProject?.id) {
+      throw new Error('请先选择项目')
+    }
+
+    await apiDelete<{ id: string; deleted: boolean }>(
+      `/api/projects/${activeProject.id}/chat/messages/${encodeURIComponent(messageId)}`,
+    )
+    setChatMessages((prev) => prev.filter((item) => item.id !== messageId))
   }
 
   function applyTemplateToActiveProject(template: Pick<StyleTemplate, 'id' | 'name'>) {
     setSelectedTemplateId(template.id)
     setSelectedTemplateName(template.name)
-    setChatMessages((prev) => [...prev, `系统：已将模板「${template.name}」应用到当前项目。`])
+    setChatMessages((prev) => [
+      ...prev,
+      {
+        id: newTempId('sys-template'),
+        role: 'system',
+        content: `已将模板「${template.name}」应用到当前项目。`,
+        createdAt: new Date().toISOString(),
+      },
+    ])
   }
 
   async function generateDeck(): Promise<void> {
@@ -821,10 +1145,31 @@ export function AppStoreProvider({ children }: PropsWithChildren) {
     try {
       await apiPost<ExportStartResponse>(`/api/projects/${activeProject.id}/export/${format}`, {})
       await reloadJobs()
-      setChatMessages((prev) => [...prev, `系统：${format.toUpperCase()} 导出任务已创建。`])
+      setChatMessages((prev) => [
+        ...prev,
+        {
+          id: newTempId('sys-export'),
+          role: 'system',
+          content: `${format.toUpperCase()} 导出任务已创建。`,
+          createdAt: new Date().toISOString(),
+        },
+      ])
     } finally {
       setIsExportingDeck(false)
     }
+  }
+
+  async function refreshProjectAnalysisSummary(): Promise<ProjectAnalysisSummaryDTO> {
+    if (!activeProject?.id) {
+      throw new Error('请先选择项目')
+    }
+
+    const summary = await apiPost<ProjectAnalysisSummaryDTO>(
+      `/api/projects/${activeProject.id}/analysis-summary/reanalyze`,
+      {},
+    )
+    setProjectAnalysisSummary(summary)
+    return summary
   }
 
   async function saveProjectCustomStyle(customStyle: string): Promise<void> {
@@ -845,17 +1190,30 @@ export function AppStoreProvider({ children }: PropsWithChildren) {
     setConfigMessage('校验中...')
 
     try {
+      const analysisApiKey = analysisConfig.apiKey.trim()
+      const imageApiKey = imageConfig.key.trim()
+
+      if (!analysisApiKey || analysisApiKey.includes('*')) {
+        setConfigMessage('analysis api key 不能为空，请填写真实 key 后再保存')
+        return
+      }
+
+      if (!imageApiKey || imageApiKey.includes('*')) {
+        setConfigMessage('image api key 不能为空，请填写真实 key 后再保存')
+        return
+      }
+
       const payload = {
         analysis: {
           provider: toBackendAnalysisProvider(analysisConfig.provider),
           baseUrl: analysisConfig.baseUrl,
-          apiKey: analysisConfig.apiKey,
+          apiKey: analysisApiKey,
           model: analysisConfig.model,
         },
         image: {
           _type: imageConfig._type,
           url: imageConfig.url,
-          key: imageConfig.key,
+          key: imageApiKey,
           model: imageConfig.model,
         },
       }
@@ -871,14 +1229,16 @@ export function AppStoreProvider({ children }: PropsWithChildren) {
         ...prev,
         provider: toAnalysisProvider(saved.analysis.provider),
         baseUrl: saved.analysis.baseUrl,
-        apiKey: saved.analysis.apiKeyMasked,
+        apiKey: '',
+        apiKeyMasked: saved.analysis.apiKeyMasked,
         model: saved.analysis.model,
       }))
       setImageConfigState((prev) => ({
         ...prev,
         _type: saved.image._type,
         url: saved.image.url,
-        key: saved.image.keyMasked,
+        key: '',
+        keyMasked: saved.image.keyMasked,
         model: saved.image.model,
       }))
 
@@ -1037,16 +1397,23 @@ export function AppStoreProvider({ children }: PropsWithChildren) {
       refreshCurrentUser,
       logout,
       createProject,
+      renameProject,
+      deleteProject,
       openProject,
       uploadSource,
       retrySource,
       removeSource,
       retryJob,
+      cancelJob,
+      deleteJob,
       sendChatMessage,
+      clearChatMessages,
+      deleteChatMessage,
       generateDeck,
       regenerateSlideImage,
       updateSlideText,
       exportDeck,
+      refreshProjectAnalysisSummary,
       saveProjectCustomStyle,
       validateAndSaveConfig,
     }),
@@ -1090,16 +1457,23 @@ export function AppStoreProvider({ children }: PropsWithChildren) {
       refreshCurrentUser,
       logout,
       createProject,
+      renameProject,
+      deleteProject,
       openProject,
       uploadSource,
       retrySource,
       removeSource,
       retryJob,
+      cancelJob,
+      deleteJob,
       sendChatMessage,
+      clearChatMessages,
+      deleteChatMessage,
       generateDeck,
       regenerateSlideImage,
       updateSlideText,
       exportDeck,
+      refreshProjectAnalysisSummary,
       saveProjectCustomStyle,
       validateAndSaveConfig,
     ]

@@ -344,6 +344,7 @@ export class SkillPptService {
       OPENAI_BASE_URL: modelConfig.image.url || modelConfig.analysis.baseUrl,
       OPENAI_API_KEY: modelConfig.image.key || modelConfig.analysis.apiKey,
       GPT_IMAGE_MODEL_NAME: modelConfig.image.model || 'gpt-image-2',
+      OPENAI_IMAGE_SIZE: '1024x1024',
       GPT_IMAGE_QUALITY: env.skill.quality
     };
   }

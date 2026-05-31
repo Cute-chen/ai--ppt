@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
+import { Navigate, Outlet, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import { AppLayout } from './layout/AppLayout'
 import { ApiHttpError, getAccessToken, setUnauthorizedHandler } from './lib/http'
 import FeaturesPage from './pages/FeaturesPage'
@@ -24,6 +24,17 @@ function ProtectedRoute() {
   }
 
   return <AppLayout />
+}
+
+function ProtectedStandaloneRoute() {
+  const isLoggedIn = useRequireAuth()
+  const location = useLocation()
+
+  if (!isLoggedIn) {
+    return <Navigate to="/login" replace state={{ from: location.pathname }} />
+  }
+
+  return <Outlet />
 }
 
 function AuthLifecycle() {
@@ -78,10 +89,12 @@ export default function App() {
 
         <Route element={<ProtectedRoute />}>
           <Route path="/projects" element={<ProjectsPage />} />
-          <Route path="/workspace" element={<WorkspacePage />} />
           <Route path="/templates" element={<TemplatesPage />} />
           <Route path="/model-settings" element={<ModelSettingsPage />} />
           <Route path="/jobs" element={<JobsPage />} />
+        </Route>
+        <Route element={<ProtectedStandaloneRoute />}>
+          <Route path="/workspace" element={<WorkspacePage />} />
         </Route>
 
         <Route path="*" element={<Navigate to="/" replace />} />

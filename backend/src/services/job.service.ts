@@ -5,6 +5,7 @@ import { newId } from '../common/utils/id';
 import { env } from '../config/env';
 import { queueConnection } from '../config/queue';
 import { jobRepository } from '../repositories/job.repository';
+import { handleJobByType } from '../worker/job-handlers';
 
 const QUEUE_NAME = 'ai-ppt-jobs';
 
@@ -29,10 +30,40 @@ const getQueue = (): Queue => {
   return queue;
 };
 
+const hasActiveQueueWorkers = async (q: Queue): Promise<boolean> => {
+  try {
+    const workers = await q.getWorkers();
+    return workers.length > 0;
+  } catch {
+    // 查询 worker 失败时不阻塞正常入队流程，交由后续入队异常兜底。
+    return true;
+  }
+};
+
 const normalizeProjectUuid = (payload: Record<string, unknown>): string | undefined => {
   const fromProjectId = payload.projectId;
   if (typeof fromProjectId === 'string' && fromProjectId) return fromProjectId;
   return undefined;
+};
+
+/**
+ * Run a job directly in the current process (no queue).
+ * Used as fallback when Redis is unavailable or queue add times out.
+ */
+const runJobInProcess = (localJobId: string, type: JobType, payload: Record<string, unknown>): void => {
+  void (async () => {
+    try {
+      const started = await jobService.startJob(localJobId, 20);
+      if (!started) {
+        return;
+      }
+      const result = await handleJobByType({ localJobId, type, payload });
+      await jobService.updateStatus(localJobId, 'succeeded', 100, undefined, result as Record<string, unknown>);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'in-process job failed';
+      await jobService.updateStatus(localJobId, 'failed', 100, msg);
+    }
+  })();
 };
 
 export class JobService {
@@ -54,10 +85,23 @@ export class JobService {
     await this.addEvent(localJobId, 'queued', `${type} queued`);
 
     if (!env.queue.enabled) {
-      await this.updateStatus(localJobId, 'succeeded', 100, undefined, {
-        mode: 'mock',
-        type
-      });
+      // Queue disabled — run directly in this process
+      runJobInProcess(localJobId, type, payload);
+
+      const row = await jobRepository.getJobByUuid(localJobId);
+      if (!row) {
+        throw new AppError('job not found after enqueue', 500);
+      }
+
+      return jobRepository.mapJobRow(row);
+    }
+
+    const q = getQueue();
+
+    // queue 开启但没有任何 worker 时，避免任务永久停留在 queued。
+    if (!(await hasActiveQueueWorkers(q))) {
+      await this.addEvent(localJobId, 'queued', 'queue has no active worker, running in-process');
+      runJobInProcess(localJobId, type, payload);
 
       const row = await jobRepository.getJobByUuid(localJobId);
       if (!row) {
@@ -68,20 +112,27 @@ export class JobService {
     }
 
     try {
-      const q = getQueue();
       await Promise.race([
-        q.add(type, {
-          localJobId,
+        q.add(
           type,
-          payload
-        }),
+          {
+            localJobId,
+            type,
+            payload
+          },
+          {
+            jobId: localJobId
+          }
+        ),
         new Promise((_, reject) =>
           setTimeout(() => reject(new Error('queue add timeout')), env.queue.addTimeoutMs)
         )
       ]);
     } catch (error) {
+      // Queue unavailable or timed out — fall back to in-process execution
       const errMsg = error instanceof Error ? error.message : 'unknown queue error';
-      await this.updateStatus(localJobId, 'failed', 0, errMsg);
+      await this.addEvent(localJobId, 'queued', `queue unavailable (${errMsg}), running in-process`);
+      runJobInProcess(localJobId, type, payload);
     }
 
     const row = await jobRepository.getJobByUuid(localJobId);
@@ -176,6 +227,65 @@ export class JobService {
     const retried = await this.enqueueJob(userId, job.type, payload);
     await this.addEvent(jobId, 'retried', `retry queued as ${retried.id}`);
     return retried;
+  }
+
+  public async startJob(jobId: string, progress = 20): Promise<boolean> {
+    return jobRepository.updateJobStatusIfCurrent({
+      jobUuid: jobId,
+      expectedStatus: 'queued',
+      status: 'running',
+      progress
+    });
+  }
+
+  public async cancelJob(jobId: string, userId: string): Promise<JobRecord> {
+    const job = await this.getJob(jobId, userId);
+    if (!job) {
+      throw new AppError('job not found', 404);
+    }
+
+    const moved = await jobRepository.updateJobStatusIfCurrent({
+      jobUuid: jobId,
+      expectedStatus: 'queued',
+      status: 'canceled',
+      progress: job.progress
+    });
+
+    if (!moved) {
+      throw new AppError('only queued jobs can be canceled', 409);
+    }
+
+    await this.addEvent(jobId, 'canceled', 'job canceled by user');
+
+    if (env.queue.enabled) {
+      try {
+        await getQueue().remove(jobId);
+      } catch {
+        // best effort only
+      }
+    }
+
+    const canceled = await this.getJob(jobId, userId);
+    if (!canceled) {
+      throw new AppError('job not found after cancel', 500);
+    }
+    return canceled;
+  }
+
+  public async deleteJob(jobId: string, userId: string): Promise<void> {
+    const job = await this.getJob(jobId, userId);
+    if (!job) {
+      throw new AppError('job not found', 404);
+    }
+
+    if (job.status !== 'succeeded' && job.status !== 'failed' && job.status !== 'canceled') {
+      throw new AppError('only terminal jobs can be deleted', 409);
+    }
+
+    const removed = await jobRepository.deleteJobByUser(jobId, userId);
+    if (!removed.deleted) {
+      throw new AppError('job not found', 404);
+    }
   }
 
   public async updateStatus(
