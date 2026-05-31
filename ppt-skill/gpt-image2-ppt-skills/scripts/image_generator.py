@@ -36,6 +36,7 @@ MAX_RETRIES = 3  # 524/超时/连接断开等瞬态错误的重试次数
 RETRY_DELAY_SECS = 5
 MAX_ASPECT_RETRIES = 2  # 比例不合格自动重生次数
 ASPECT_TOLERANCE = 0.15  # 比例偏差容忍度（±15%）
+MAX_UNSAFE_PROMPT_REWRITES = 1  # 命中 image_unsafe 时最多自动净化重试次数
 
 # 期望的宽高比（width / height）
 ASPECT_RATIO_VALUES = {
@@ -140,6 +141,41 @@ class GptImage2Generator:
         else:
             # 兜底当 base64
             self._save_b64(payload, output_path)
+
+    def _supports_chat_fallback(self, err_msg: str) -> bool:
+        """判断是否应从 images 回退到 chat。
+
+        仅在「images 端点不支持 / 路径无效」这类协议层错误时回退。
+        对 451(image_unsafe)、403(余额/权限)、429、5xx 等业务/容量错误，不回退，
+        以免把根因掩盖成 chat 405。
+        """
+        msg = (err_msg or "").lower()
+        if "status=404" in msg or "invalid url" in msg:
+            return True
+        if "status=405" in msg:
+            return True
+        if "method not allowed" in msg or "endpoint not found" in msg:
+            return True
+        return False
+
+    def _sanitize_prompt_for_safety_retry(self, prompt: str) -> str:
+        """对高误判风险 token 做温和净化，尽量不改变语义。"""
+        text = prompt
+        # 代码样式/占位符常被中转审核误判，先清理
+        text = re.sub(r"\(:\{\{.*?\}\}:\)", "（文本标签）", text)
+        text = re.sub(r"\b[A-Za-z_][A-Za-z0-9_./:-]*\b", "", text)
+        # 去掉多余空白
+        text = re.sub(r"[ \t]{2,}", " ", text)
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        text = text.strip()
+        # 保底补一句，避免删空
+        if len(text) < 20:
+            text += "\n请生成简体中文商务风格矢量幻灯片，不要人物与写实元素。"
+        return text
+
+    def _is_image_unsafe_error(self, err_msg: str) -> bool:
+        msg = (err_msg or "").lower()
+        return "status=451" in msg and "image_unsafe" in msg
 
     # ---------- 多模态响应解析（chat completions 走这里）----------
 
@@ -364,6 +400,8 @@ class GptImage2Generator:
             os.makedirs(out_dir, exist_ok=True)
 
         target_size = self.default_size if size == "auto" else size
+        prompt_to_use = prompt
+        unsafe_rewrite_used = 0
         print(f"📝 prompt[:100]: {prompt[:100].replace(chr(10), ' ')}{'...' if len(prompt) > 100 else ''}")
 
         import time as _time
@@ -377,26 +415,40 @@ class GptImage2Generator:
                     if self.endpoint == "images":
                         # images endpoint 暂不支持 reference image，自动 fallback 到 chat
                         if reference_image_path:
-                            payload = self._request_via_chat(prompt, target_size, reference_image_path)
+                            payload = self._request_via_chat(prompt_to_use, target_size, reference_image_path)
                         else:
-                            payload = self._request_via_images(prompt, target_size)
+                            payload = self._request_via_images(prompt_to_use, target_size)
                     elif self.endpoint == "chat":
-                        payload = self._request_via_chat(prompt, target_size, reference_image_path)
+                        payload = self._request_via_chat(prompt_to_use, target_size, reference_image_path)
                     else:  # auto
                         try:
                             if reference_image_path:
-                                payload = self._request_via_chat(prompt, target_size, reference_image_path)
+                                payload = self._request_via_chat(prompt_to_use, target_size, reference_image_path)
                             else:
-                                payload = self._request_via_images(prompt, target_size)
+                                payload = self._request_via_images(prompt_to_use, target_size)
                         except Exception as e:
-                            print(f"(!) images 失败，回退到 chat: {str(e)[:120]}")
-                            payload = self._request_via_chat(prompt, target_size, reference_image_path)
+                            err = str(e)
+                            if self._supports_chat_fallback(err):
+                                print(f"(!) images 端点不支持，回退到 chat: {err[:120]}")
+                                payload = self._request_via_chat(
+                                    prompt_to_use, target_size, reference_image_path
+                                )
+                            else:
+                                raise
 
                     self._save_payload(payload, output_path)
                     break  # 成功落盘，跳出瞬态重试循环
                 except Exception as e:
                     last_err = e
                     msg = str(e)[:200]
+                    if self._is_image_unsafe_error(str(e)) and unsafe_rewrite_used < MAX_UNSAFE_PROMPT_REWRITES:
+                        unsafe_rewrite_used += 1
+                        prompt_to_use = self._sanitize_prompt_for_safety_retry(prompt_to_use)
+                        print(
+                            f"(!) [scene {scene_index}] 命中 image_unsafe，"
+                            f"执行提示词净化重试 ({unsafe_rewrite_used}/{MAX_UNSAFE_PROMPT_REWRITES})"
+                        )
+                        continue
                     transient = any(s in msg for s in ("524", "502", "503", "504", "timeout", "Read timed out",
                                                         "Connection aborted", "RemoteDisconnected"))
                     if attempt < MAX_RETRIES and transient:
